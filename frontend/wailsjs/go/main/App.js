@@ -38,6 +38,10 @@ export function SaveCalibration(arg1, arg2) {
   return window['go']['main']['App']['SaveCalibration'](arg1, arg2);
 }
 
+export function SendToScoreboard(arg1) {
+  return window['go']['main']['App']['SendToScoreboard'](arg1);
+}
+
 export function SetCircleCentre(arg1) {
   return window['go']['main']['App']['SetCircleCentre'](arg1);
 }

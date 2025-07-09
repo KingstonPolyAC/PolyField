@@ -6,7 +6,7 @@ import {
 // Wails Go Function Imports
 import {
     ListSerialPorts, ConnectSerialDevice, ConnectNetworkDevice, DisconnectDevice, SetDemoMode,
-    GetCalibration, SaveCalibration, SetCircleCentre, VerifyCircleEdge, MeasureThrow, ResetCalibration
+    GetCalibration, SaveCalibration, SetCircleCentre, VerifyCircleEdge, MeasureThrow, ResetCalibration, SendToScoreboard, MeasureWind
 } from '../wailsjs/go/main/App';
 
 // --- UI Components ---
@@ -52,10 +52,10 @@ const SelectEventTypeScreen = ({ onNavigate, setAppState }) => (
                 <span className="text-xl md:text-2xl mt-2.5">Throws</span>
                 <p className="text-base text-gray-600 mt-2">Shot, Discus, Hammer, Javelin</p>
             </Card>
-            <Card disabled={true} className="h-56 sm:h-64">
-                <Wind size={48} className="mb-2 text-gray-400" />
+            <Card onClick={() => { setAppState(prev => ({ ...prev, eventType: 'Horizontal Jumps' })); onNavigate('SELECT_DEVICES'); }} className="h-56 sm:h-64">
+                <Wind size={48} className="mb-2 text-blue-600" />
                 <span className="text-xl md:text-2xl mt-2.5">Horizontal Jumps</span>
-                <p className="text-base text-gray-600 mt-2">Coming Soon</p>
+                <p className="text-base text-gray-600 mt-2">Long Jump, Triple Jump</p>
             </Card>
         </div>
     </div>
@@ -64,42 +64,53 @@ const SelectEventTypeScreen = ({ onNavigate, setAppState }) => (
 const SelectDevicesScreen = ({ onNavigate, appState, setAppState }) => {
     const [serialPorts, setSerialPorts] = useState([]);
     const [status, setStatus] = useState({});
-    const [connectionType, setConnectionType] = useState('serial');
-    const [ipAddress, setIpAddress] = useState('192.168.1.100');
-    const [port, setPort] = useState('5000');
-    
+    const [connectionDetails, setConnectionDetails] = useState({
+        edm: { type: 'serial', port: '', ip: '192.168.1.100', tcpPort: '10001' },
+        wind: { type: 'serial', port: '', ip: '192.168.1.102', tcpPort: '10001' },
+        scoreboard: { type: 'serial', port: '', ip: '192.168.1.101', tcpPort: '10001' },
+    });
+
     useEffect(() => {
-        if (connectionType === 'serial') {
-            ListSerialPorts().then(ports => setSerialPorts(ports.map(p => ({ value: p, label: p })))).catch(console.error);
-        }
-    }, [connectionType]);
+        ListSerialPorts().then(ports => setSerialPorts(ports.map(p => ({ value: p, label: p })))).catch(console.error);
+    }, []);
 
     const handleToggleDemoMode = (enabled) => {
         setAppState(prev => ({ ...prev, demoMode: enabled }));
         SetDemoMode(enabled);
     };
+
+    const handleConnectionDetailChange = (deviceType, field, value) => {
+        const newDetails = { ...connectionDetails[deviceType], [field]: value };
+        setConnectionDetails(prev => ({ ...prev, [deviceType]: newDetails }));
+        
+        if (field === 'port' && newDetails.type === 'serial' && value) {
+            handleConnect(deviceType, { type: 'serial', port: value });
+        }
+    };
+
     const handleConnect = async (deviceType) => {
         setStatus(prev => ({ ...prev, [deviceType]: "Connecting..." }));
+        const details = connectionDetails[deviceType];
         try {
             let result;
-            if (connectionType === 'serial') {
-                const portName = appState.devices[deviceType]?.port;
-                if (!portName) { setStatus(prev => ({ ...prev, [deviceType]: "Please select a port." })); return; }
-                result = await ConnectSerialDevice(deviceType, portName);
+            if (details.type === 'serial') {
+                if (!details.port) { setStatus(prev => ({ ...prev, [deviceType]: "Please select a port." })); return; }
+                result = await ConnectSerialDevice(deviceType, details.port);
             } else {
-                result = await ConnectNetworkDevice(deviceType, ipAddress, parseInt(port, 10));
+                result = await ConnectNetworkDevice(deviceType, details.ip, parseInt(details.tcpPort, 10));
             }
-            setAppState(prev => ({ ...prev, devices: { ...prev.devices, [deviceType]: { ...prev.devices[deviceType], connected: true } } }));
+            setAppState(prev => ({ ...prev, devices: { ...prev.devices, [deviceType]: { ...details, connected: true } } }));
             setStatus(prev => ({ ...prev, [deviceType]: result }));
         } catch (error) {
             setStatus(prev => ({ ...prev, [deviceType]: `Error: ${error}` }));
         }
     };
+
     const handleDisconnect = async (deviceType) => {
         setStatus(prev => ({ ...prev, [deviceType]: "Disconnecting..." }));
         try {
             const result = await DisconnectDevice(deviceType);
-            setAppState(prev => ({ ...prev, devices: { ...prev.devices, [deviceType]: { port: '', ipAddress: '', tcpPort: '', connected: false } } }));
+            setAppState(prev => ({ ...prev, devices: { ...prev.devices, [deviceType]: { ...connectionDetails[deviceType], connected: false } } }));
             setStatus(prev => ({ ...prev, [deviceType]: result }));
         } catch (error) {
             setStatus(prev => ({ ...prev, [deviceType]: `Error: ${error}` }));
@@ -117,20 +128,22 @@ const SelectDevicesScreen = ({ onNavigate, appState, setAppState }) => {
     };
 
     const DevicePanel = ({ title, deviceType, icon, showCalibrateButton = false }) => {
-        const device = appState.devices[deviceType] || {};
-        const isConnected = device.connected;
+        const deviceState = appState.devices[deviceType] || {};
+        const details = connectionDetails[deviceType];
+        const isConnected = deviceState.connected;
+
         return (
             <div className="bg-gray-50 p-4 rounded-lg shadow-sm border border-gray-200">
                 <h3 className="text-lg font-semibold text-blue-700 mb-2 flex items-center">{icon} {title}</h3>
                 <div className="grid grid-cols-2 gap-2 mb-2">
-                    <Button size="sm" variant={connectionType === 'serial' ? 'primary' : 'secondary'} onClick={() => setConnectionType('serial')} icon={Usb}>Serial</Button>
-                    <Button size="sm" variant={connectionType === 'network' ? 'primary' : 'secondary'} onClick={() => setConnectionType('network')} icon={Wifi}>Network</Button>
+                    <Button size="sm" variant={details.type === 'serial' ? 'primary' : 'secondary'} onClick={() => handleConnectionDetailChange(deviceType, 'type', 'serial')} icon={Usb}>Serial</Button>
+                    <Button size="sm" variant={details.type === 'network' ? 'primary' : 'secondary'} onClick={() => handleConnectionDetailChange(deviceType, 'type', 'network')} icon={Wifi}>Network</Button>
                 </div>
-                {connectionType === 'serial' && (<Select value={device.port || ''} onChange={(e) => setAppState(prev => ({...prev, devices: {...prev.devices, [deviceType]: {port: e.target.value}}}))} options={serialPorts} disabled={isConnected || appState.demoMode} /> )}
-                {connectionType === 'network' && (
+                {details.type === 'serial' && (<Select value={details.port || ''} onChange={(e) => handleConnectionDetailChange(deviceType, 'port', e.target.value)} options={serialPorts} disabled={isConnected || appState.demoMode} /> )}
+                {details.type === 'network' && (
                     <div className="grid grid-cols-2 gap-2">
-                        <InputField label="IP Address" value={ipAddress} onChange={e => setIpAddress(e.target.value)} placeholder="192.168.1.100" disabled={isConnected || appState.demoMode} />
-                        <InputField label="Port" value={port} onChange={e => setPort(e.target.value)} placeholder="5000" disabled={isConnected || appState.demoMode} />
+                        <InputField label="IP Address" value={details.ip} onChange={e => handleConnectionDetailChange(deviceType, 'ip', e.target.value)} disabled={isConnected || appState.demoMode} />
+                        <InputField label="Port" value={details.tcpPort} onChange={e => handleConnectionDetailChange(deviceType, 'tcpPort', e.target.value)} disabled={isConnected || appState.demoMode} />
                     </div>
                 )}
                 <div className="mt-2"><Button onClick={() => isConnected ? handleDisconnect(deviceType) : handleConnect(deviceType)} variant={isConnected ? 'danger' : 'success'} size="sm" icon={isConnected ? PowerOff : Power} disabled={appState.demoMode} className="w-full">{isConnected ? 'Disconnect' : 'Connect'}</Button></div>
@@ -145,7 +158,11 @@ const SelectDevicesScreen = ({ onNavigate, appState, setAppState }) => {
             <h1 className="text-2xl font-bold text-center mb-1 text-gray-800">DEVICE SETUP</h1>
             <p className="text-center text-base text-gray-600 mb-4">Connect equipment or use Demo Mode.</p>
             <div className="bg-yellow-100 border-l-4 border-yellow-500 text-yellow-700 p-3 rounded-md mb-4"><ToggleSwitch label="Demo Mode" enabled={appState.demoMode} onToggle={handleToggleDemoMode} /></div>
-            <div className="space-y-3">{appState.eventType === 'Throws' && <DevicePanel title="EDM" deviceType="edm" icon={<Target size={20} className="mr-1.5" />} showCalibrateButton={true} />}</div>
+            <div className="space-y-3">
+                {appState.eventType === 'Throws' && <DevicePanel title="EDM" deviceType="edm" icon={<Target size={20} className="mr-1.5" />} showCalibrateButton={true} />}
+                {appState.eventType === 'Horizontal Jumps' && <DevicePanel title="Wind Gauge" deviceType="wind" icon={<Wind size={20} className="mr-1.5" />} />}
+                <DevicePanel title="Scoreboard" deviceType="scoreboard" icon={<Speaker size={20} className="mr-1.5" />} />
+            </div>
             <BottomNavBar>
                 <Button onClick={() => onNavigate('SELECT_EVENT_TYPE')} variant="secondary" icon={ChevronLeft} size="lg">Back</Button>
                 <Button onClick={handleNext} icon={ChevronRight} size="lg">Next</Button>
@@ -165,7 +182,6 @@ const CalibrateEDMScreen = ({ onNavigate, appState }) => {
     const fetchCal = () => {
         setIsLoading(true);
         GetCalibration(deviceType).then(data => {
-            // Ensure a default circle type is set if one doesn't exist
             if (!data.selectedCircleType) {
                 data.selectedCircleType = "SHOT";
                 data.targetRadius = UKA_DEFAULTS.SHOT;
@@ -249,7 +265,7 @@ const CalibrateEDMScreen = ({ onNavigate, appState }) => {
                         {calData.edgeVerificationResult && (
                             <span className="flex items-center ml-2">
                                 {calData.edgeVerificationResult.isInTolerance ? <CheckCircle size={16}/> : <XCircle size={16}/>}
-                                <span className="ml-1">{calData.edgeVerificationResult.differenceMm.toFixed(1)}mm</span>
+                                <span className="ml-1">{calData.edgeVerificationResult.differenceMm.toFixed(1)}mm (Tol: ±{calData.edgeVerificationResult.toleranceAppliedMm.toFixed(1)}mm)</span>
                             </span>
                         )}
                     </Button>
@@ -263,7 +279,7 @@ const CalibrateEDMScreen = ({ onNavigate, appState }) => {
                 </div>
                 {isCalibrated ? 
                     <Button onClick={() => onNavigate('STAND_ALONE_MODE')} icon={ChevronRight} size="lg">Next</Button>
-                    : <div className="w-28"></div> // Placeholder to balance the layout
+                    : <div style={{width: '112px'}}></div> // Placeholder to balance the layout
                 }
             </BottomNavBar>
         </div>
@@ -274,12 +290,16 @@ const StandAloneModeScreen = ({ onNavigate, appState }) => {
     const [measurement, setMeasurement] = useState('');
     const [status, setStatus] = useState('Ready');
     const [isMeasuring, setIsMeasuring] = useState(false);
+    const [countdown, setCountdown] = useState(0);
+
+    const isThrows = appState.eventType === 'Throws';
+    const isJumps = appState.eventType === 'Horizontal Jumps';
 
     const handleMeasure = async () => {
         setIsMeasuring(true);
         setStatus('Requesting measurement...');
         try {
-            const result = await MeasureThrow("edm");
+            const result = isThrows ? await MeasureThrow("edm") : await handleWindMeasure();
             setMeasurement(result);
             setStatus(`Measurement received: ${result}`);
         } catch (error) {
@@ -290,19 +310,35 @@ const StandAloneModeScreen = ({ onNavigate, appState }) => {
         setIsMeasuring(false);
     };
 
+    const handleWindMeasure = () => {
+        return new Promise((resolve, reject) => {
+            setCountdown(5);
+            const timer = setInterval(() => {
+                setCountdown(prev => {
+                    if (prev <= 1) {
+                        clearInterval(timer);
+                        MeasureWind("wind").then(resolve).catch(reject);
+                        return 0;
+                    }
+                    return prev - 1;
+                });
+            }, 1000);
+        });
+    };
+
     return (
         <div className="p-4 md:p-6 max-w-full mx-auto flex flex-col h-full">
             <h1 className="text-2xl font-bold text-center mb-2 text-gray-800">MEASUREMENT MODE</h1>
             <p className="text-center text-lg text-gray-600 mb-4">Event Type: <span className="font-semibold">{appState.eventType}</span> {appState.demoMode && <span className="text-yellow-600 font-bold">(DEMO)</span>}</p>
             <div className="flex-grow grid grid-cols-1 gap-6 content-start">
                 <div className="bg-white p-4 rounded-lg shadow-md border">
-                    <h2 className="text-xl font-semibold text-blue-700 mb-4">Measure Throw</h2>
+                    <h2 className="text-xl font-semibold text-blue-700 mb-4">Measure</h2>
                     <Button onClick={handleMeasure} disabled={isMeasuring} size="lg" className="w-full">
-                        {isMeasuring ? 'Measuring...' : 'Measure Distance'}
+                        {isMeasuring ? (countdown > 0 ? `Measuring in ${countdown}...` : 'Measuring...') : `Measure ${isThrows ? 'Distance' : 'Wind'}`}
                     </Button>
                     <div className="mt-4 p-4 bg-gray-100 rounded-lg text-center">
-                        <p className="text-lg font-medium text-gray-600">Mark:</p>
-                        <p className="text-5xl font-bold text-gray-800 h-16 flex items-center justify-center">{measurement}</p>
+                        <p className="text-lg font-medium text-gray-600">{isThrows ? 'Mark:' : 'Wind:'}</p>
+                        <p className="text-7xl font-bold text-gray-800 h-24 flex items-center justify-center">{measurement}</p>
                     </div>
                 </div>
             </div>
@@ -317,7 +353,7 @@ const StandAloneModeScreen = ({ onNavigate, appState }) => {
 // Main App Component
 export default function App() {
     const [currentScreen, setCurrentScreen] = useState('SELECT_EVENT_TYPE');
-    const [appState, setAppState] = useState({ eventType: null, demoMode: false, devices: { edm: { port: '', connected: false } } });
+    const [appState, setAppState] = useState({ eventType: null, demoMode: false, devices: { edm: {}, wind: {}, scoreboard: {} } });
     useEffect(() => { SetDemoMode(appState.demoMode); }, []);
     const renderScreen = () => {
         switch (currentScreen) {

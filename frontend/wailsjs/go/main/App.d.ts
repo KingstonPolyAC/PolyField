@@ -20,6 +20,8 @@ export function ResetCalibration(arg1:string):Promise<void>;
 
 export function SaveCalibration(arg1:string,arg2:main.EDMCalibrationData):Promise<void>;
 
+export function SendToScoreboard(arg1:string):Promise<void>;
+
 export function SetCircleCentre(arg1:string):Promise<main.EDMCalibrationData>;
 
 export function SetDemoMode(arg1:boolean):Promise<void>;
