@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log"
 	"math"
 	"math/rand"
 	"net"
@@ -20,10 +21,8 @@ import (
 var edmReadCommand = []byte{0x11, 0x0d, 0x0a}
 
 const (
-	maxEdmRetriesForPair    = 3
 	sdToleranceMm           = 3.0
 	delayBetweenReadsInPair = 250 * time.Millisecond
-	delayBetweenRetryPairs  = 600 * time.Millisecond
 	edmReadTimeout          = 10 * time.Second
 	UkaRadiusShot           = 1.0675
 	UkaRadiusDiscus         = 1.250
@@ -31,6 +30,7 @@ const (
 	UkaRadiusJavelinArc     = 8.000
 	ToleranceThrowsCircleMm = 5.0
 	ToleranceJavelinMm      = 10.0
+	windBufferSize          = 120 // Approx 2 minutes of data at 1 reading/sec
 )
 
 // --- Data Structures ---
@@ -38,6 +38,11 @@ type Device struct {
 	Conn           io.ReadWriteCloser
 	ConnectionType string
 	Address        string
+	cancelListener context.CancelFunc // To stop the listener goroutine
+}
+type WindReading struct {
+	Value     float64
+	Timestamp time.Time
 }
 type EDMPoint struct {
 	X float64 `json:"x"`
@@ -72,6 +77,7 @@ type App struct {
 	ctx              context.Context
 	stateMux         sync.Mutex
 	devices          map[string]*Device
+	windBuffer       []WindReading
 	demoMode         bool
 	CalibrationStore map[string]*EDMCalibrationData
 }
@@ -80,6 +86,7 @@ type App struct {
 func NewApp() *App {
 	return &App{
 		devices:          make(map[string]*Device),
+		windBuffer:       make([]WindReading, 0, windBufferSize),
 		CalibrationStore: make(map[string]*EDMCalibrationData),
 		demoMode:         false,
 	}
@@ -89,6 +96,9 @@ func (a *App) wailsShutdown(ctx context.Context) {
 	a.stateMux.Lock()
 	defer a.stateMux.Unlock()
 	for _, dev := range a.devices {
+		if dev.cancelListener != nil {
+			dev.cancelListener()
+		}
 		if dev.Conn != nil {
 			dev.Conn.Close()
 		}
@@ -137,14 +147,28 @@ func parseEDMResponseString(raw string) (*ParsedEDMReading, error) {
 	}
 	return &ParsedEDMReading{SlopeDistanceMm: sd, VAzDecimal: vaz, HARDecimal: har}, nil
 }
+func (a *App) parseWindResponse(raw string) (float64, bool) {
+	parts := strings.Split(strings.TrimSpace(raw), ",")
+	if len(parts) > 1 && (strings.HasPrefix(parts[1], "+") || strings.HasPrefix(parts[1], "-")) {
+		val, err := strconv.ParseFloat(parts[1], 64)
+		if err == nil {
+			return val, true
+		}
+	}
+	return 0, false
+}
 
 // --- Wails Bindable Functions ---
 func (a *App) SetDemoMode(enabled bool)           { a.stateMux.Lock(); a.demoMode = enabled; a.stateMux.Unlock() }
 func (a *App) ListSerialPorts() ([]string, error) { return serial.GetPortsList() }
+
 func (a *App) ConnectSerialDevice(devType, portName string) (string, error) {
 	a.stateMux.Lock()
 	defer a.stateMux.Unlock()
 	if d, ok := a.devices[devType]; ok && d.Conn != nil {
+		if d.cancelListener != nil {
+			d.cancelListener()
+		}
 		d.Conn.Close()
 	}
 	mode := &serial.Mode{BaudRate: 9600}
@@ -152,33 +176,56 @@ func (a *App) ConnectSerialDevice(devType, portName string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	a.devices[devType] = &Device{Conn: port, ConnectionType: "serial", Address: portName}
+	ctx, cancel := context.WithCancel(context.Background())
+	a.devices[devType] = &Device{Conn: port, ConnectionType: "serial", Address: portName, cancelListener: cancel}
+	if devType == "wind" {
+		go a.StartWindListener(devType, ctx)
+	}
+	if devType == "scoreboard" {
+		go a.SendToScoreboard("88:88")
+	}
 	return fmt.Sprintf("Connected to %s on %s", devType, portName), nil
 }
+
 func (a *App) ConnectNetworkDevice(devType, ipAddress string, port int) (string, error) {
 	a.stateMux.Lock()
 	defer a.stateMux.Unlock()
 	if d, ok := a.devices[devType]; ok && d.Conn != nil {
+		if d.cancelListener != nil {
+			d.cancelListener()
+		}
 		d.Conn.Close()
 	}
-	address := fmt.Sprintf("%s:%d", ipAddress, port)
+	address := net.JoinHostPort(ipAddress, strconv.Itoa(port))
 	conn, err := net.DialTimeout("tcp", address, 5*time.Second)
 	if err != nil {
 		return "", err
 	}
-	a.devices[devType] = &Device{Conn: conn, ConnectionType: "network", Address: address}
+	ctx, cancel := context.WithCancel(context.Background())
+	a.devices[devType] = &Device{Conn: conn, ConnectionType: "network", Address: address, cancelListener: cancel}
+	if devType == "wind" {
+		go a.StartWindListener(devType, ctx)
+	}
+	if devType == "scoreboard" {
+		go a.SendToScoreboard("88:88")
+	}
 	return fmt.Sprintf("Connected to %s at %s", devType, address), nil
 }
+
 func (a *App) DisconnectDevice(devType string) (string, error) {
 	a.stateMux.Lock()
 	defer a.stateMux.Unlock()
 	if dev, ok := a.devices[devType]; ok && dev.Conn != nil {
+		if dev.cancelListener != nil {
+			dev.cancelListener()
+		}
 		dev.Conn.Close()
 		delete(a.devices, devType)
 		return fmt.Sprintf("Disconnected %s", devType), nil
 	}
 	return "", fmt.Errorf("%s not connected", devType)
 }
+
 func (a *App) GetCalibration(devType string) (*EDMCalibrationData, error) {
 	a.stateMux.Lock()
 	defer a.stateMux.Unlock()
@@ -187,26 +234,24 @@ func (a *App) GetCalibration(devType string) (*EDMCalibrationData, error) {
 	}
 	return &EDMCalibrationData{DeviceID: devType, SelectedCircleType: "SHOT", TargetRadius: UkaRadiusShot}, nil
 }
+
 func (a *App) SaveCalibration(devType string, data EDMCalibrationData) error {
 	a.stateMux.Lock()
 	defer a.stateMux.Unlock()
-	// Only update timestamp if it's a significant change, like setting the centre
-	if data.IsCentreSet && a.CalibrationStore[devType] != nil && !a.CalibrationStore[devType].IsCentreSet {
-		data.Timestamp = time.Now().UTC()
-	} else if a.CalibrationStore[devType] == nil {
-		data.Timestamp = time.Now().UTC()
-	} else {
-		data.Timestamp = a.CalibrationStore[devType].Timestamp
+	if existingCal, ok := a.CalibrationStore[devType]; ok {
+		data.Timestamp = existingCal.Timestamp
 	}
 	a.CalibrationStore[devType] = &data
 	return nil
 }
+
 func (a *App) ResetCalibration(devType string) error {
 	a.stateMux.Lock()
 	defer a.stateMux.Unlock()
 	delete(a.CalibrationStore, devType)
 	return nil
 }
+
 func (a *App) _triggerSingleEDMRead(dev *Device) (*ParsedEDMReading, error) {
 	if _, err := dev.Conn.Write(edmReadCommand); err != nil {
 		return nil, err
@@ -224,6 +269,7 @@ func (a *App) _triggerSingleEDMRead(dev *Device) (*ParsedEDMReading, error) {
 	}
 	return parseEDMResponseString(resp)
 }
+
 func (a *App) GetReliableEDMReading(devType string) (*AveragedEDMReading, error) {
 	a.stateMux.Lock()
 	if a.demoMode {
@@ -265,9 +311,8 @@ func (a *App) SetCircleCentre(devType string) (*EDMCalibrationData, error) {
 	}
 	a.stateMux.Lock()
 	defer a.stateMux.Unlock()
-	cal, exists := a.CalibrationStore[devType]
-	if !exists {
-		// This should not happen if frontend logic is correct, but as a fallback:
+	cal, _ := a.CalibrationStore[devType]
+	if cal == nil {
 		cal = &EDMCalibrationData{DeviceID: devType, SelectedCircleType: "SHOT", TargetRadius: UkaRadiusShot}
 	}
 	sdMeters := reading.SlopeDistanceMm / 1000.0
@@ -341,7 +386,9 @@ func (a *App) MeasureThrow(devType string) (string, error) {
 		default:
 			min, max = 15.00, 60.00
 		}
-		return fmt.Sprintf("%.2f m", min+rand.Float64()*(max-min)), nil
+		result := fmt.Sprintf("%.2f m", min+rand.Float64()*(max-min))
+		go a.SendToScoreboard(strings.TrimSuffix(result, " m"))
+		return result, nil
 	}
 	a.stateMux.Unlock()
 	reading, err := a.GetReliableEDMReading(devType)
@@ -358,5 +405,93 @@ func (a *App) MeasureThrow(devType string) (string, error) {
 	measuredY := cal.StationCoordinates.Y + yPrime
 	distFromCenter := math.Sqrt(math.Pow(measuredX, 2) + math.Pow(measuredY, 2))
 	finalThrowDist := distFromCenter - cal.TargetRadius
-	return fmt.Sprintf("%.2f m", finalThrowDist), nil
+	result := fmt.Sprintf("%.2f m", finalThrowDist)
+	go a.SendToScoreboard(strings.TrimSuffix(result, " m"))
+	return result, nil
+}
+
+// --- Wind & Scoreboard Specific Functions ---
+func (a *App) StartWindListener(devType string, ctx context.Context) {
+	a.stateMux.Lock()
+	device, ok := a.devices[devType]
+	a.stateMux.Unlock()
+	if !ok {
+		return
+	}
+
+	scanner := bufio.NewScanner(device.Conn)
+	for scanner.Scan() {
+		select {
+		case <-ctx.Done():
+			log.Printf("Stopping wind listener for %s", devType)
+			return
+		default:
+			text := scanner.Text()
+			if val, ok := a.parseWindResponse(text); ok {
+				a.stateMux.Lock()
+				a.windBuffer = append(a.windBuffer, WindReading{Value: val, Timestamp: time.Now()})
+				if len(a.windBuffer) > windBufferSize {
+					a.windBuffer = a.windBuffer[1:]
+				}
+				a.stateMux.Unlock()
+			}
+		}
+	}
+}
+
+func (a *App) MeasureWind(devType string) (string, error) {
+	a.stateMux.Lock()
+	defer a.stateMux.Unlock()
+
+	if a.demoMode {
+		windSpeed := (rand.Float64() * 4.0) - 2.0
+		result := fmt.Sprintf("%+.1f m/s", windSpeed)
+		go a.SendToScoreboard(result)
+		return result, nil
+	}
+
+	_, ok := a.devices[devType]
+	if !ok {
+		return "", fmt.Errorf("wind gauge not connected")
+	}
+
+	now := time.Now()
+	fiveSecondsAgo := now.Add(-5 * time.Second)
+	var readingsInWindow []float64
+	for _, reading := range a.windBuffer {
+		if reading.Timestamp.After(fiveSecondsAgo) {
+			readingsInWindow = append(readingsInWindow, reading.Value)
+		}
+	}
+
+	if len(readingsInWindow) == 0 {
+		return "", fmt.Errorf("no wind readings in the last 5 seconds")
+	}
+
+	var sum float64
+	for _, v := range readingsInWindow {
+		sum += v
+	}
+	avg := sum / float64(len(readingsInWindow))
+	result := fmt.Sprintf("%+.1f m/s", avg)
+	go a.SendToScoreboard(result)
+	return result, nil
+}
+
+func (a *App) SendToScoreboard(value string) error {
+	a.stateMux.Lock()
+	defer a.stateMux.Unlock()
+	if a.demoMode {
+		log.Printf("DEMO: Would send '%s' to scoreboard", value)
+		return nil
+	}
+	scoreboard, ok := a.devices["scoreboard"]
+	if !ok || scoreboard.Conn == nil {
+		return fmt.Errorf("scoreboard not connected")
+	}
+	_, err := scoreboard.Conn.Write([]byte(value + "\r\n"))
+	if err != nil {
+		return fmt.Errorf("failed to write to scoreboard: %w", err)
+	}
+	return nil
 }
