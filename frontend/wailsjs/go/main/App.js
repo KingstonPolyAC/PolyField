@@ -10,6 +10,10 @@ export function ConnectSerialDevice(arg1, arg2) {
   return window['go']['main']['App']['ConnectSerialDevice'](arg1, arg2);
 }
 
+export function DebugCalibrationData(arg1) {
+  return window['go']['main']['App']['DebugCalibrationData'](arg1);
+}
+
 export function DisconnectDevice(arg1) {
   return window['go']['main']['App']['DisconnectDevice'](arg1);
 }
@@ -30,6 +34,10 @@ export function MeasureThrow(arg1) {
   return window['go']['main']['App']['MeasureThrow'](arg1);
 }
 
+export function MeasureWind(arg1) {
+  return window['go']['main']['App']['MeasureWind'](arg1);
+}
+
 export function ResetCalibration(arg1) {
   return window['go']['main']['App']['ResetCalibration'](arg1);
 }
@@ -48,6 +56,10 @@ export function SetCircleCentre(arg1) {
 
 export function SetDemoMode(arg1) {
   return window['go']['main']['App']['SetDemoMode'](arg1);
+}
+
+export function StartWindListener(arg1, arg2) {
+  return window['go']['main']['App']['StartWindListener'](arg1, arg2);
 }
 
 export function VerifyCircleEdge(arg1) {

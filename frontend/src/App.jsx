@@ -9,8 +9,116 @@ import {
     GetCalibration, SaveCalibration, SetCircleCentre, VerifyCircleEdge, MeasureThrow, ResetCalibration, SendToScoreboard, MeasureWind
 } from '../wailsjs/go/main/App';
 
-// --- UI Components ---
-const Card = ({ children, onClick, className = '', disabled = false }) => ( <button onClick={onClick} disabled={disabled} className={`border-2 border-gray-300 hover:border-blue-400 bg-white text-gray-800 font-semibold p-4 rounded-lg shadow-md hover:shadow-lg transition-all duration-200 ease-in-out flex flex-col items-center justify-center text-center ${disabled ? 'opacity-50 cursor-not-allowed' : ''} ${className}`}>{children}</button> );
+// ==================================================
+// PERSISTENT STORAGE UTILITIES
+// ==================================================
+
+const STORAGE_KEYS = {
+    CONNECTION_DETAILS: 'polyfield-connection-details',
+    APP_SETTINGS: 'polyfield-app-settings'
+};
+
+// Safe localStorage utilities that handle errors gracefully
+const StorageUtils = {
+    save: (key, data) => {
+        try {
+            localStorage.setItem(key, JSON.stringify(data));
+            return true;
+        } catch (error) {
+            console.error(`Error saving to localStorage (${key}):`, error);
+            return false;
+        }
+    },
+    
+    load: (key, defaultValue = null) => {
+        try {
+            const stored = localStorage.getItem(key);
+            return stored ? JSON.parse(stored) : defaultValue;
+        } catch (error) {
+            console.error(`Error loading from localStorage (${key}):`, error);
+            return defaultValue;
+        }
+    },
+    
+    remove: (key) => {
+        try {
+            localStorage.removeItem(key);
+            return true;
+        } catch (error) {
+            console.error(`Error removing from localStorage (${key}):`, error);
+            return false;
+        }
+    }
+};
+
+// Default connection details
+const getDefaultConnectionDetails = () => ({
+    edm: { 
+        type: 'serial', 
+        port: '', 
+        ip: '192.168.1.100', 
+        tcpPort: '10001',
+        connected: false 
+    },
+    wind: { 
+        type: 'serial', 
+        port: '', 
+        ip: '192.168.1.102', 
+        tcpPort: '10001',
+        connected: false 
+    },
+    scoreboard: { 
+        type: 'serial', 
+        port: '', 
+        ip: '192.168.1.101', 
+        tcpPort: '10001',
+        connected: false 
+    }
+});
+
+// Load stored connection details
+const loadStoredConnectionDetails = () => {
+    const stored = StorageUtils.load(STORAGE_KEYS.CONNECTION_DETAILS);
+    const defaults = getDefaultConnectionDetails();
+    
+    if (!stored) {
+        return defaults;
+    }
+    
+    // Merge stored data with defaults to handle missing fields
+    const merged = { ...defaults };
+    Object.keys(defaults).forEach(deviceType => {
+        if (stored[deviceType]) {
+            merged[deviceType] = {
+                ...defaults[deviceType],
+                ...stored[deviceType],
+                connected: false // Always start disconnected
+            };
+        }
+    });
+    
+    return merged;
+};
+
+// Load stored app settings
+const loadStoredAppSettings = () => {
+    return StorageUtils.load(STORAGE_KEYS.APP_SETTINGS, {
+        demoMode: false,
+        lastEventType: null,
+        lastScreen: 'SELECT_EVENT_TYPE'
+    });
+};
+
+// ==================================================
+// UI COMPONENTS
+// ==================================================
+
+const Card = ({ children, onClick, className = '', disabled = false }) => ( 
+    <button onClick={onClick} disabled={disabled} className={`border-2 border-gray-300 hover:border-blue-400 bg-white text-gray-800 font-semibold p-4 rounded-lg shadow-md hover:shadow-lg transition-all duration-200 ease-in-out flex flex-col items-center justify-center text-center ${disabled ? 'opacity-50 cursor-not-allowed' : ''} ${className}`}>
+        {children}
+    </button> 
+);
+
 const Button = ({ children, onClick, variant = 'primary', className = '', icon: Icon, disabled = false, size = 'md' }) => {
     const baseStyle = 'rounded-lg font-semibold shadow-md hover:shadow-lg transition-all duration-200 ease-in-out flex items-center justify-center space-x-2 disabled:opacity-60 disabled:cursor-not-allowed focus:outline-none focus:ring-2 focus:ring-offset-1 active:scale-95';
     const sizeStyle = size === 'sm' ? 'px-3 py-1.5 text-sm' : (size === 'lg' ? 'px-8 py-4 text-xl' : 'px-6 py-3 text-lg');
@@ -21,27 +129,61 @@ const Button = ({ children, onClick, variant = 'primary', className = '', icon: 
         case 'success': variantStyle = 'bg-green-500 hover:bg-green-600 text-white focus:ring-green-400'; break;
         default: variantStyle = 'bg-blue-600 hover:bg-blue-700 text-white focus:ring-blue-500';
     }
-    return ( <button onClick={onClick} className={`${baseStyle} ${variantStyle} ${sizeStyle} ${className}`} disabled={disabled}> {Icon && <Icon size={size === 'sm' ? 16 : (size === 'lg' ? 24 : 20)} className={children ? "mr-2" : ""} />} {children && <span>{children}</span>} </button> );
+    return ( 
+        <button onClick={onClick} className={`${baseStyle} ${variantStyle} ${sizeStyle} ${className}`} disabled={disabled}> 
+            {Icon && <Icon size={size === 'sm' ? 16 : (size === 'lg' ? 24 : 20)} className={children ? "mr-2" : ""} />} 
+            {children && <span>{children}</span>} 
+        </button> 
+    );
 };
+
 const Select = ({ label, value, onChange, options, className = '', disabled = false }) => (
     <div className={`mb-2 ${className}`}>
         {label && <label className="block text-sm font-medium text-gray-700 mb-1">{label}</label>}
-        <select value={value} onChange={onChange} disabled={disabled} className="w-full px-3 py-2 text-base border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 disabled:bg-gray-200">
+        <select 
+            value={value || ''} 
+            onChange={(e) => onChange(e.target.value)} 
+            disabled={disabled} 
+            className="w-full px-3 py-2 text-base border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 disabled:bg-gray-200"
+        >
             <option value="">-- Select --</option>
             {options.map(opt => (<option key={opt.value} value={opt.value}>{opt.label}</option>))}
         </select>
     </div>
 );
+
 const InputField = ({ label, type = "text", value, onChange, placeholder, className = '', disabled = false }) => (
     <div className={`mb-2 ${className}`}>
         {label && <label className="block text-sm font-medium text-gray-700 mb-1">{label}</label>}
-        <input type={type} value={value} onChange={onChange} placeholder={placeholder} disabled={disabled} className="w-full px-3 py-2 text-base border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 disabled:bg-gray-200" />
+        <input 
+            type={type} 
+            value={value || ''} 
+            onChange={(e) => onChange(e.target.value)} 
+            placeholder={placeholder} 
+            disabled={disabled} 
+            className="w-full px-3 py-2 text-base border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 disabled:bg-gray-200" 
+        />
     </div>
 );
-const ToggleSwitch = ({ label, enabled, onToggle }) => ( <div className="flex items-center justify-between"> <span className="text-base font-medium text-gray-700">{label}</span> <button onClick={() => onToggle(!enabled)} className={`relative inline-flex items-center h-6 rounded-full w-11 transition-colors duration-300 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 ${enabled ? 'bg-blue-600' : 'bg-gray-300'}`}> <span className={`inline-block w-4 h-4 transform bg-white rounded-full transition-transform duration-300 ${enabled ? 'translate-x-6' : 'translate-x-1'}`} /> </button> </div> );
-const BottomNavBar = ({ children }) => ( <div className="fixed bottom-0 left-0 right-0 bg-gray-100 p-3 border-t border-gray-300 shadow-top z-30 flex justify-between items-center">{children}</div> );
 
-// --- Screens ---
+const ToggleSwitch = ({ label, enabled, onToggle }) => ( 
+    <div className="flex items-center justify-between"> 
+        <span className="text-base font-medium text-gray-700">{label}</span> 
+        <button onClick={() => onToggle(!enabled)} className={`relative inline-flex items-center h-6 rounded-full w-11 transition-colors duration-300 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 ${enabled ? 'bg-blue-600' : 'bg-gray-300'}`}> 
+            <span className={`inline-block w-4 h-4 transform bg-white rounded-full transition-transform duration-300 ${enabled ? 'translate-x-6' : 'translate-x-1'}`} /> 
+        </button> 
+    </div> 
+);
+
+const BottomNavBar = ({ children }) => ( 
+    <div className="fixed bottom-0 left-0 right-0 bg-gray-100 p-3 border-t border-gray-300 shadow-top z-30 flex justify-between items-center">
+        {children}
+    </div> 
+);
+
+// ==================================================
+// SCREEN COMPONENTS
+// ==================================================
 
 const SelectEventTypeScreen = ({ onNavigate, setAppState }) => (
     <div className="p-4 md:p-6 max-w-full mx-auto flex flex-col h-full">
@@ -64,11 +206,6 @@ const SelectEventTypeScreen = ({ onNavigate, setAppState }) => (
 const SelectDevicesScreen = ({ onNavigate, appState, setAppState }) => {
     const [serialPorts, setSerialPorts] = useState([]);
     const [status, setStatus] = useState({});
-    const [connectionDetails, setConnectionDetails] = useState({
-        edm: { type: 'serial', port: '', ip: '192.168.1.100', tcpPort: '10001' },
-        wind: { type: 'serial', port: '', ip: '192.168.1.102', tcpPort: '10001' },
-        scoreboard: { type: 'serial', port: '', ip: '192.168.1.101', tcpPort: '10001' },
-    });
 
     useEffect(() => {
         ListSerialPorts().then(ports => setSerialPorts(ports.map(p => ({ value: p, label: p })))).catch(console.error);
@@ -79,27 +216,52 @@ const SelectDevicesScreen = ({ onNavigate, appState, setAppState }) => {
         SetDemoMode(enabled);
     };
 
+    // Persistent connection detail changes
     const handleConnectionDetailChange = (deviceType, field, value) => {
-        const newDetails = { ...connectionDetails[deviceType], [field]: value };
-        setConnectionDetails(prev => ({ ...prev, [deviceType]: newDetails }));
+        const currentDetails = appState.connectionDetails[deviceType];
+        const newDetails = { ...currentDetails, [field]: value };
         
+        setAppState(prev => ({ 
+            ...prev, 
+            connectionDetails: {
+                ...prev.connectionDetails,
+                [deviceType]: newDetails 
+            }
+        }));
+        
+        // Auto-connect for serial ports
         if (field === 'port' && newDetails.type === 'serial' && value) {
-            handleConnect(deviceType, { type: 'serial', port: value });
+            handleConnect(deviceType);
         }
     };
 
     const handleConnect = async (deviceType) => {
         setStatus(prev => ({ ...prev, [deviceType]: "Connecting..." }));
-        const details = connectionDetails[deviceType];
+        const details = appState.connectionDetails[deviceType];
         try {
             let result;
             if (details.type === 'serial') {
-                if (!details.port) { setStatus(prev => ({ ...prev, [deviceType]: "Please select a port." })); return; }
+                if (!details.port) { 
+                    setStatus(prev => ({ ...prev, [deviceType]: "Please select a port." })); 
+                    return; 
+                }
                 result = await ConnectSerialDevice(deviceType, details.port);
             } else {
                 result = await ConnectNetworkDevice(deviceType, details.ip, parseInt(details.tcpPort, 10));
             }
-            setAppState(prev => ({ ...prev, devices: { ...prev.devices, [deviceType]: { ...details, connected: true } } }));
+            
+            // Update both devices and connectionDetails
+            setAppState(prev => ({ 
+                ...prev, 
+                devices: { 
+                    ...prev.devices, 
+                    [deviceType]: { connected: true } 
+                },
+                connectionDetails: {
+                    ...prev.connectionDetails,
+                    [deviceType]: { ...details, connected: true }
+                }
+            }));
             setStatus(prev => ({ ...prev, [deviceType]: result }));
         } catch (error) {
             setStatus(prev => ({ ...prev, [deviceType]: `Error: ${error}` }));
@@ -110,7 +272,17 @@ const SelectDevicesScreen = ({ onNavigate, appState, setAppState }) => {
         setStatus(prev => ({ ...prev, [deviceType]: "Disconnecting..." }));
         try {
             const result = await DisconnectDevice(deviceType);
-            setAppState(prev => ({ ...prev, devices: { ...prev.devices, [deviceType]: { ...connectionDetails[deviceType], connected: false } } }));
+            setAppState(prev => ({ 
+                ...prev, 
+                devices: { 
+                    ...prev.devices, 
+                    [deviceType]: { connected: false } 
+                },
+                connectionDetails: {
+                    ...prev.connectionDetails,
+                    [deviceType]: { ...prev.connectionDetails[deviceType], connected: false }
+                }
+            }));
             setStatus(prev => ({ ...prev, [deviceType]: result }));
         } catch (error) {
             setStatus(prev => ({ ...prev, [deviceType]: `Error: ${error}` }));
@@ -129,7 +301,7 @@ const SelectDevicesScreen = ({ onNavigate, appState, setAppState }) => {
 
     const DevicePanel = ({ title, deviceType, icon, showCalibrateButton = false }) => {
         const deviceState = appState.devices[deviceType] || {};
-        const details = connectionDetails[deviceType];
+        const details = appState.connectionDetails[deviceType];
         const isConnected = deviceState.connected;
 
         return (
@@ -139,16 +311,59 @@ const SelectDevicesScreen = ({ onNavigate, appState, setAppState }) => {
                     <Button size="sm" variant={details.type === 'serial' ? 'primary' : 'secondary'} onClick={() => handleConnectionDetailChange(deviceType, 'type', 'serial')} icon={Usb}>Serial</Button>
                     <Button size="sm" variant={details.type === 'network' ? 'primary' : 'secondary'} onClick={() => handleConnectionDetailChange(deviceType, 'type', 'network')} icon={Wifi}>Network</Button>
                 </div>
-                {details.type === 'serial' && (<Select value={details.port || ''} onChange={(e) => handleConnectionDetailChange(deviceType, 'port', e.target.value)} options={serialPorts} disabled={isConnected || appState.demoMode} /> )}
+                {details.type === 'serial' && (
+                    <Select 
+                        value={details.port || ''} 
+                        onChange={(value) => handleConnectionDetailChange(deviceType, 'port', value)} 
+                        options={serialPorts} 
+                        disabled={isConnected || appState.demoMode} 
+                    /> 
+                )}
                 {details.type === 'network' && (
                     <div className="grid grid-cols-2 gap-2">
-                        <InputField label="IP Address" value={details.ip} onChange={e => handleConnectionDetailChange(deviceType, 'ip', e.target.value)} disabled={isConnected || appState.demoMode} />
-                        <InputField label="Port" value={details.tcpPort} onChange={e => handleConnectionDetailChange(deviceType, 'tcpPort', e.target.value)} disabled={isConnected || appState.demoMode} />
+                        <InputField 
+                            label="IP Address" 
+                            value={details.ip} 
+                            onChange={(value) => handleConnectionDetailChange(deviceType, 'ip', value)} 
+                            disabled={isConnected || appState.demoMode} 
+                        />
+                        <InputField 
+                            label="Port" 
+                            value={details.tcpPort} 
+                            onChange={(value) => handleConnectionDetailChange(deviceType, 'tcpPort', value)} 
+                            disabled={isConnected || appState.demoMode} 
+                        />
                     </div>
                 )}
-                <div className="mt-2"><Button onClick={() => isConnected ? handleDisconnect(deviceType) : handleConnect(deviceType)} variant={isConnected ? 'danger' : 'success'} size="sm" icon={isConnected ? PowerOff : Power} disabled={appState.demoMode} className="w-full">{isConnected ? 'Disconnect' : 'Connect'}</Button></div>
-                {showCalibrateButton && (<Button onClick={() => onNavigate('CALIBRATE_EDM')} variant="secondary" icon={Compass} size="sm" className="w-full mt-2" disabled={!isConnected && !appState.demoMode}>Calibrate EDM</Button>)}
-                {status[deviceType] && <p className={`mt-2 text-xs ${status[deviceType]?.includes('Error') ? 'text-red-500' : 'text-gray-600'}`}>Status: {status[deviceType]}</p>}
+                <div className="mt-2">
+                    <Button 
+                        onClick={() => isConnected ? handleDisconnect(deviceType) : handleConnect(deviceType)} 
+                        variant={isConnected ? 'danger' : 'success'} 
+                        size="sm" 
+                        icon={isConnected ? PowerOff : Power} 
+                        disabled={appState.demoMode} 
+                        className="w-full"
+                    >
+                        {isConnected ? 'Disconnect' : 'Connect'}
+                    </Button>
+                </div>
+                {showCalibrateButton && (
+                    <Button 
+                        onClick={() => onNavigate('CALIBRATE_EDM')} 
+                        variant="secondary" 
+                        icon={Compass} 
+                        size="sm" 
+                        className="w-full mt-2" 
+                        disabled={!isConnected && !appState.demoMode}
+                    >
+                        Calibrate EDM
+                    </Button>
+                )}
+                {status[deviceType] && (
+                    <p className={`mt-2 text-xs ${status[deviceType]?.includes('Error') ? 'text-red-500' : 'text-gray-600'}`}>
+                        Status: {status[deviceType]}
+                    </p>
+                )}
             </div>
         );
     };
@@ -157,7 +372,9 @@ const SelectDevicesScreen = ({ onNavigate, appState, setAppState }) => {
         <div className="p-3 md:p-4 max-w-full mx-auto" style={{ paddingBottom: '80px', maxHeight: 'calc(100vh - 60px)', overflowY: 'auto' }}>
             <h1 className="text-2xl font-bold text-center mb-1 text-gray-800">DEVICE SETUP</h1>
             <p className="text-center text-base text-gray-600 mb-4">Connect equipment or use Demo Mode.</p>
-            <div className="bg-yellow-100 border-l-4 border-yellow-500 text-yellow-700 p-3 rounded-md mb-4"><ToggleSwitch label="Demo Mode" enabled={appState.demoMode} onToggle={handleToggleDemoMode} /></div>
+            <div className="bg-yellow-100 border-l-4 border-yellow-500 text-yellow-700 p-3 rounded-md mb-4">
+                <ToggleSwitch label="Demo Mode" enabled={appState.demoMode} onToggle={handleToggleDemoMode} />
+            </div>
             <div className="space-y-3">
                 {appState.eventType === 'Throws' && <DevicePanel title="EDM" deviceType="edm" icon={<Target size={20} className="mr-1.5" />} showCalibrateButton={true} />}
                 {appState.eventType === 'Horizontal Jumps' && <DevicePanel title="Wind Gauge" deviceType="wind" icon={<Wind size={20} className="mr-1.5" />} />}
@@ -200,6 +417,7 @@ const CalibrateEDMScreen = ({ onNavigate, appState }) => {
         setCalData(newCalData);
         await SaveCalibration(deviceType, newCalData);
     };
+
     const handleSetCentre = async () => {
         setIsLoading(true);
         setStatus("Setting centre... Aim at circle centre and wait.");
@@ -207,19 +425,40 @@ const CalibrateEDMScreen = ({ onNavigate, appState }) => {
             const updatedCal = await SetCircleCentre(deviceType);
             setCalData(updatedCal);
             setStatus("Circle centre has been set.");
-        } catch (error) { setStatus(`Error setting centre: ${error}`); }
+        } catch (error) { 
+            setStatus(`Error setting centre: ${error}`); 
+        }
         setIsLoading(false);
     };
+
     const handleVerifyEdge = async () => {
         setIsLoading(true);
         setStatus("Verifying edge... Aim at circle edge and wait.");
         try {
             const updatedCal = await VerifyCircleEdge(deviceType);
             setCalData(updatedCal);
-            setStatus("Edge verification complete.");
-        } catch (error) { setStatus(`Error verifying edge: ${error}`); }
+            
+            // Enhanced status messages based on tolerance check
+            if (updatedCal.edgeVerificationResult) {
+                const result = updatedCal.edgeVerificationResult;
+                const diffMm = Math.abs(result.differenceMm);
+                const toleranceMm = result.toleranceAppliedMm;
+                
+                if (result.isInTolerance) {
+                    setStatus(`✅ Edge verification PASSED. Difference: ${diffMm.toFixed(1)}mm (within ±${toleranceMm.toFixed(1)}mm tolerance). Ready to measure.`);
+                } else {
+                    const advice = diffMm > 50 ? "Recalibrate centre position." : "Remeasure edge or check circle alignment.";
+                    setStatus(`❌ Edge verification FAILED tolerance check. Difference: ${diffMm.toFixed(1)}mm (exceeds ±${toleranceMm.toFixed(1)}mm tolerance). ${advice}`);
+                }
+            } else {
+                setStatus("❌ Edge verification failed - no result data received.");
+            }
+        } catch (error) { 
+            setStatus(`❌ Error during edge verification: ${error}`); 
+        }
         setIsLoading(false);
     };
+
     const handleReset = async () => {
         setIsLoading(true);
         setStatus("Resetting calibration...");
@@ -227,13 +466,33 @@ const CalibrateEDMScreen = ({ onNavigate, appState }) => {
             await ResetCalibration(deviceType);
             fetchCal();
             setStatus("Calibration has been reset.");
-        } catch (error) { setStatus(`Error resetting: ${error}`); }
+        } catch (error) { 
+            setStatus(`Error resetting: ${error}`); 
+        }
         setIsLoading(false);
     };
+
     const formatTimestamp = (isoString) => {
         if (!isoString) return "";
         const date = new Date(isoString);
         return date.toLocaleString('en-GB', { hour: '2-digit', minute: '2-digit', day: '2-digit', month: '2-digit', year: '2-digit' });
+    };
+
+    const getEdgeVerificationButtonStyle = (result) => {
+        if (!result) return '';
+        
+        if (result.isInTolerance) {
+            const diffMm = Math.abs(result.differenceMm);
+            if (diffMm <= 1.0) {
+                return 'border-4 border-green-600 bg-green-50'; // Excellent
+            } else if (diffMm <= 3.0) {
+                return 'border-4 border-green-500 bg-green-50'; // Good
+            } else {
+                return 'border-4 border-green-400 bg-green-50'; // Acceptable
+            }
+        } else {
+            return 'border-4 border-red-500 bg-red-50'; // Failed
+        }
     };
     
     if (!calData) return <div className="p-4 text-center">{isLoading ? "Loading..." : status}</div>;
@@ -260,12 +519,23 @@ const CalibrateEDMScreen = ({ onNavigate, appState }) => {
                 <div className={`p-4 bg-white border rounded-lg shadow-sm ${!calData.isCentreSet ? 'opacity-50' : ''}`}>
                     <h3 className="font-semibold text-lg mb-2">Step 3: Verify Circle Edge</h3>
                     <p className="text-sm text-gray-600 mb-2">Aim EDM at any point on the circle's edge and press the button.</p>
-                    <Button onClick={handleVerifyEdge} icon={Ruler} className={`w-full ${calData.edgeVerificationResult ? (calData.edgeVerificationResult.isInTolerance ? 'border-4 border-green-500' : 'border-4 border-red-500') : ''}`} disabled={!calData.isCentreSet || isLoading}>
+                    <Button 
+                        onClick={handleVerifyEdge} 
+                        icon={Ruler} 
+                        className={`w-full ${getEdgeVerificationButtonStyle(calData.edgeVerificationResult)}`} 
+                        disabled={!calData.isCentreSet || isLoading}
+                    >
                         <span>Verify Edge</span>
                         {calData.edgeVerificationResult && (
                             <span className="flex items-center ml-2">
-                                {calData.edgeVerificationResult.isInTolerance ? <CheckCircle size={16}/> : <XCircle size={16}/>}
-                                <span className="ml-1">{calData.edgeVerificationResult.differenceMm.toFixed(1)}mm (Tol: ±{calData.edgeVerificationResult.toleranceAppliedMm.toFixed(1)}mm)</span>
+                                {calData.edgeVerificationResult.isInTolerance ? 
+                                    <CheckCircle size={16} className="text-green-600"/> : 
+                                    <XCircle size={16} className="text-red-600"/>
+                                }
+                                <span className="ml-1">
+                                    {Math.abs(calData.edgeVerificationResult.differenceMm).toFixed(1)}mm 
+                                    (±{calData.edgeVerificationResult.toleranceAppliedMm.toFixed(1)}mm)
+                                </span>
                             </span>
                         )}
                     </Button>
@@ -350,24 +620,77 @@ const StandAloneModeScreen = ({ onNavigate, appState }) => {
     );
 };
 
-// Main App Component
+// ==================================================
+// MAIN APP COMPONENT
+// ==================================================
+
 export default function App() {
-    const [currentScreen, setCurrentScreen] = useState('SELECT_EVENT_TYPE');
-    const [appState, setAppState] = useState({ eventType: null, demoMode: false, devices: { edm: {}, wind: {}, scoreboard: {} } });
-    useEffect(() => { SetDemoMode(appState.demoMode); }, []);
+    const [currentScreen, setCurrentScreen] = useState(() => {
+        // Optionally restore last screen (comment out if you don't want this)
+        // const settings = loadStoredAppSettings();
+        // return settings.lastScreen || 'SELECT_EVENT_TYPE';
+        return 'SELECT_EVENT_TYPE';
+    });
+    
+    const [appState, setAppState] = useState(() => {
+        const storedSettings = loadStoredAppSettings();
+        const storedConnections = loadStoredConnectionDetails();
+        
+        return {
+            eventType: storedSettings.lastEventType,
+            demoMode: storedSettings.demoMode,
+            devices: {
+                edm: { connected: false },
+                wind: { connected: false },
+                scoreboard: { connected: false }
+            },
+            connectionDetails: storedConnections
+        };
+    });
+
+    // Save connection details whenever they change
+    useEffect(() => {
+        StorageUtils.save(STORAGE_KEYS.CONNECTION_DETAILS, appState.connectionDetails);
+    }, [appState.connectionDetails]);
+
+    // Save app settings whenever they change
+    useEffect(() => {
+        const settings = {
+            demoMode: appState.demoMode,
+            lastEventType: appState.eventType,
+            lastScreen: currentScreen
+        };
+        StorageUtils.save(STORAGE_KEYS.APP_SETTINGS, settings);
+    }, [appState.demoMode, appState.eventType, currentScreen]);
+
+    // Initialize demo mode on startup
+    useEffect(() => { 
+        SetDemoMode(appState.demoMode); 
+    }, []);
+
     const renderScreen = () => {
         switch (currentScreen) {
-            case 'SELECT_EVENT_TYPE': return <SelectEventTypeScreen onNavigate={setCurrentScreen} setAppState={setAppState} />;
-            case 'SELECT_DEVICES': return <SelectDevicesScreen onNavigate={setCurrentScreen} appState={appState} setAppState={setAppState} />;
-            case 'CALIBRATE_EDM': return <CalibrateEDMScreen onNavigate={setCurrentScreen} appState={appState} />;
-            case 'STAND_ALONE_MODE': return <StandAloneModeScreen onNavigate={setCurrentScreen} appState={appState} />;
-            default: return <SelectEventTypeScreen onNavigate={setCurrentScreen} setAppState={setAppState} />;
+            case 'SELECT_EVENT_TYPE': 
+                return <SelectEventTypeScreen onNavigate={setCurrentScreen} setAppState={setAppState} />;
+            case 'SELECT_DEVICES': 
+                return <SelectDevicesScreen onNavigate={setCurrentScreen} appState={appState} setAppState={setAppState} />;
+            case 'CALIBRATE_EDM': 
+                return <CalibrateEDMScreen onNavigate={setCurrentScreen} appState={appState} setAppState={setAppState} />;
+            case 'STAND_ALONE_MODE': 
+                return <StandAloneModeScreen onNavigate={setCurrentScreen} appState={appState} setAppState={setAppState} />;
+            default: 
+                return <SelectEventTypeScreen onNavigate={setCurrentScreen} setAppState={setAppState} />;
         }
     };
+
     return (
         <div className="h-screen flex flex-col bg-gray-100">
-            <header className="bg-blue-700 text-white p-2.5 shadow-md sticky top-0 z-40"><h1 className="text-lg font-bold text-center">PolyField by KACPH</h1></header>
-            <main className="flex-grow overflow-hidden p-1.5 sm:p-2 w-full max-w-full"><div className="bg-white shadow-lg rounded-lg h-full overflow-hidden">{renderScreen()}</div></main>
+            <header className="bg-blue-700 text-white p-2.5 shadow-md sticky top-0 z-40">
+                <h1 className="text-lg font-bold text-center">PolyField by KACPH</h1>
+            </header>
+            <main className="flex-grow overflow-hidden p-1.5 sm:p-2 w-full max-w-full">
+                <div className="bg-white shadow-lg rounded-lg h-full overflow-hidden">{renderScreen()}</div>
+            </main>
         </div>
     );
 }
