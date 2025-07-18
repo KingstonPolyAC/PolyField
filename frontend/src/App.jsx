@@ -142,7 +142,10 @@ const Select = ({ label, value, onChange, options, className = '', disabled = fa
         {label && <label className="block text-sm font-medium text-gray-700 mb-1">{label}</label>}
         <select 
             value={value || ''} 
-            onChange={(e) => onChange(e.target.value)} 
+            onChange={(e) => {
+                console.log('DEBUGGING Select: Raw event value:', e.target.value);
+                onChange(e.target.value);
+            }} 
             disabled={disabled} 
             className="w-full px-3 py-2 text-base border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 disabled:bg-gray-200"
         >
@@ -158,7 +161,10 @@ const InputField = ({ label, type = "text", value, onChange, placeholder, classN
         <input 
             type={type} 
             value={value || ''} 
-            onChange={(e) => onChange(e.target.value)} 
+            onChange={(e) => {
+                console.log('DEBUGGING Input: Raw event value:', e.target.value);
+                onChange(e.target.value);
+            }} 
             placeholder={placeholder} 
             disabled={disabled} 
             className="w-full px-3 py-2 text-base border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 disabled:bg-gray-200" 
@@ -211,15 +217,24 @@ const SelectDevicesScreen = ({ onNavigate, appState, setAppState }) => {
         ListSerialPorts().then(ports => setSerialPorts(ports.map(p => ({ value: p, label: p })))).catch(console.error);
     }, []);
 
+    // Debug effect to monitor state changes
+    useEffect(() => {
+        console.log('DEBUGGING: appState.connectionDetails changed:', appState.connectionDetails);
+    }, [appState.connectionDetails]);
+
     const handleToggleDemoMode = (enabled) => {
         setAppState(prev => ({ ...prev, demoMode: enabled }));
         SetDemoMode(enabled);
     };
 
-    // Persistent connection detail changes
+    // Fixed connection detail changes with proper debugging
     const handleConnectionDetailChange = (deviceType, field, value) => {
-        const currentDetails = appState.connectionDetails[deviceType];
+        console.log('DEBUGGING: handleConnectionDetailChange called:', { deviceType, field, value, type: typeof value });
+        
+        const currentDetails = appState.connectionDetails[deviceType] || {};
         const newDetails = { ...currentDetails, [field]: value };
+        
+        console.log('DEBUGGING: Before setState:', { currentDetails, newDetails });
         
         setAppState(prev => ({ 
             ...prev, 
@@ -301,20 +316,39 @@ const SelectDevicesScreen = ({ onNavigate, appState, setAppState }) => {
 
     const DevicePanel = ({ title, deviceType, icon, showCalibrateButton = false }) => {
         const deviceState = appState.devices[deviceType] || {};
-        const details = appState.connectionDetails[deviceType];
+        const details = appState.connectionDetails[deviceType] || {};
         const isConnected = deviceState.connected;
+
+        console.log('DEBUGGING: DevicePanel details for', deviceType, ':', details);
 
         return (
             <div className="bg-gray-50 p-4 rounded-lg shadow-sm border border-gray-200">
                 <h3 className="text-lg font-semibold text-blue-700 mb-2 flex items-center">{icon} {title}</h3>
                 <div className="grid grid-cols-2 gap-2 mb-2">
-                    <Button size="sm" variant={details.type === 'serial' ? 'primary' : 'secondary'} onClick={() => handleConnectionDetailChange(deviceType, 'type', 'serial')} icon={Usb}>Serial</Button>
-                    <Button size="sm" variant={details.type === 'network' ? 'primary' : 'secondary'} onClick={() => handleConnectionDetailChange(deviceType, 'type', 'network')} icon={Wifi}>Network</Button>
+                    <Button 
+                        size="sm" 
+                        variant={details.type === 'serial' ? 'primary' : 'secondary'} 
+                        onClick={() => handleConnectionDetailChange(deviceType, 'type', 'serial')} 
+                        icon={Usb}
+                    >
+                        Serial
+                    </Button>
+                    <Button 
+                        size="sm" 
+                        variant={details.type === 'network' ? 'primary' : 'secondary'} 
+                        onClick={() => handleConnectionDetailChange(deviceType, 'type', 'network')} 
+                        icon={Wifi}
+                    >
+                        Network
+                    </Button>
                 </div>
                 {details.type === 'serial' && (
                     <Select 
                         value={details.port || ''} 
-                        onChange={(value) => handleConnectionDetailChange(deviceType, 'port', value)} 
+                        onChange={(value) => {
+                            console.log('DEBUGGING: Serial port selected:', value);
+                            handleConnectionDetailChange(deviceType, 'port', value);
+                        }} 
                         options={serialPorts} 
                         disabled={isConnected || appState.demoMode} 
                     /> 
@@ -323,14 +357,20 @@ const SelectDevicesScreen = ({ onNavigate, appState, setAppState }) => {
                     <div className="grid grid-cols-2 gap-2">
                         <InputField 
                             label="IP Address" 
-                            value={details.ip} 
-                            onChange={(value) => handleConnectionDetailChange(deviceType, 'ip', value)} 
+                            value={details.ip || ''} 
+                            onChange={(value) => {
+                                console.log('DEBUGGING: IP changed to:', value);
+                                handleConnectionDetailChange(deviceType, 'ip', value);
+                            }} 
                             disabled={isConnected || appState.demoMode} 
                         />
                         <InputField 
                             label="Port" 
-                            value={details.tcpPort} 
-                            onChange={(value) => handleConnectionDetailChange(deviceType, 'tcpPort', value)} 
+                            value={details.tcpPort || ''} 
+                            onChange={(value) => {
+                                console.log('DEBUGGING: Port changed to:', value);
+                                handleConnectionDetailChange(deviceType, 'tcpPort', value);
+                            }} 
                             disabled={isConnected || appState.demoMode} 
                         />
                     </div>
@@ -396,26 +436,63 @@ const CalibrateEDMScreen = ({ onNavigate, appState }) => {
 
     const UKA_DEFAULTS = { SHOT: 1.0675, DISCUS: 1.250, HAMMER: 1.0675, JAVELIN_ARC: 8.000 };
 
+    // Debug effect to monitor calData changes
+    useEffect(() => {
+        console.log('DEBUGGING: calData changed:', calData);
+    }, [calData]);
+
     const fetchCal = () => {
         setIsLoading(true);
         GetCalibration(deviceType).then(data => {
+            console.log('DEBUGGING: Fetched calibration data:', data);
             if (!data.selectedCircleType) {
                 data.selectedCircleType = "SHOT";
                 data.targetRadius = UKA_DEFAULTS.SHOT;
             }
             setCalData(data);
             setStatus("Calibration data loaded.");
-        }).catch(err => setStatus(`Error: ${err}`)).finally(() => setIsLoading(false));
+        }).catch(err => {
+            console.error('DEBUGGING: Error fetching calibration:', err);
+            setStatus(`Error: ${err}`);
+        }).finally(() => setIsLoading(false));
     };
 
     useEffect(fetchCal, [deviceType]);
 
-    const handleCircleTypeChange = async (e) => {
-        const type = e.target.value;
-        const radius = UKA_DEFAULTS[type] || 0;
-        const newCalData = { ...calData, selectedCircleType: type, targetRadius: radius, isCentreSet: false, edgeVerificationResult: null };
+    const handleCircleTypeChange = async (selectedType) => {
+        console.log('DEBUGGING: Circle type change called with:', selectedType, typeof selectedType);
+        
+        if (!selectedType || selectedType === '') {
+            console.log('DEBUGGING: Empty selection, ignoring');
+            return;
+        }
+        
+        const radius = UKA_DEFAULTS[selectedType];
+        if (!radius) {
+            console.log('DEBUGGING: Invalid circle type:', selectedType);
+            return;
+        }
+        
+        console.log('DEBUGGING: Setting circle type to:', selectedType, 'with radius:', radius);
+        
+        const newCalData = { 
+            ...calData, 
+            selectedCircleType: selectedType, 
+            targetRadius: radius, 
+            isCentreSet: false, 
+            edgeVerificationResult: null 
+        };
+        
+        console.log('DEBUGGING: New calibration data:', newCalData);
+        
         setCalData(newCalData);
-        await SaveCalibration(deviceType, newCalData);
+        
+        try {
+            await SaveCalibration(deviceType, newCalData);
+            console.log('DEBUGGING: Calibration saved successfully');
+        } catch (error) {
+            console.error('DEBUGGING: Error saving calibration:', error);
+        }
     };
 
     const handleSetCentre = async () => {
@@ -484,14 +561,14 @@ const CalibrateEDMScreen = ({ onNavigate, appState }) => {
         if (result.isInTolerance) {
             const diffMm = Math.abs(result.differenceMm);
             if (diffMm <= 1.0) {
-                return 'border-4 border-green-600 bg-green-50'; // Excellent
+                return 'border-4 border-green-600'; // Excellent - keep blue background
             } else if (diffMm <= 3.0) {
-                return 'border-4 border-green-500 bg-green-50'; // Good
+                return 'border-4 border-green-500'; // Good - keep blue background
             } else {
-                return 'border-4 border-green-400 bg-green-50'; // Acceptable
+                return 'border-4 border-green-400'; // Acceptable - keep blue background
             }
         } else {
-            return 'border-4 border-red-500 bg-red-50'; // Failed
+            return 'border-4 border-red-500'; // Failed - keep blue background
         }
     };
     
@@ -506,8 +583,16 @@ const CalibrateEDMScreen = ({ onNavigate, appState }) => {
             <div className="space-y-4">
                 <div className="p-4 bg-white border rounded-lg shadow-sm">
                     <h3 className="font-semibold text-lg mb-2">Step 1: Select Circle Type</h3>
-                    <Select value={calData.selectedCircleType} onChange={handleCircleTypeChange} options={Object.keys(UKA_DEFAULTS).map(k => ({ value: k, label: k }))} />
-                    <p className="text-sm text-gray-600">Target Radius: {calData.targetRadius.toFixed(4)}m</p>
+                    <Select 
+                        value={calData.selectedCircleType || ''} 
+                        onChange={(value) => {
+                            console.log('DEBUGGING: Select onChange called with:', value);
+                            handleCircleTypeChange(value);
+                        }} 
+                        options={Object.keys(UKA_DEFAULTS).map(k => ({ value: k, label: k }))} 
+                    />
+                    <p className="text-sm text-gray-600">Target Radius: {calData.targetRadius ? calData.targetRadius.toFixed(4) : 'N/A'}m</p>
+                    <p className="text-xs text-gray-500">Current Type: {calData.selectedCircleType || 'None'}</p>
                 </div>
                 <div className={`p-4 bg-white border rounded-lg shadow-sm ${!calData.targetRadius ? 'opacity-50' : ''}`}>
                     <h3 className="font-semibold text-lg mb-2">Step 2: Set Circle Centre</h3>
@@ -529,16 +614,33 @@ const CalibrateEDMScreen = ({ onNavigate, appState }) => {
                         {calData.edgeVerificationResult && (
                             <span className="flex items-center ml-2">
                                 {calData.edgeVerificationResult.isInTolerance ? 
-                                    <CheckCircle size={16} className="text-green-600"/> : 
-                                    <XCircle size={16} className="text-red-600"/>
+                                    <CheckCircle size={16} className="text-white"/> : 
+                                    <XCircle size={16} className="text-white"/>
                                 }
-                                <span className="ml-1">
+                                <span className="ml-1 text-white">
                                     {Math.abs(calData.edgeVerificationResult.differenceMm).toFixed(1)}mm 
                                     (±{calData.edgeVerificationResult.toleranceAppliedMm.toFixed(1)}mm)
                                 </span>
                             </span>
                         )}
                     </Button>
+                    
+                    {calData.edgeVerificationResult && (
+                        <div className={`mt-2 p-2 rounded-md text-sm text-center ${
+                            calData.edgeVerificationResult.isInTolerance 
+                                ? 'bg-green-100 text-green-800' 
+                                : 'bg-red-100 text-red-800'
+                        }`}>
+                            <div className="flex items-center justify-center space-x-2">
+                                <span className="font-medium">
+                                    {calData.edgeVerificationResult.isInTolerance ? '✅ PASS' : '❌ FAIL'}
+                                </span>
+                                <span>
+                                    {Math.abs(calData.edgeVerificationResult.differenceMm).toFixed(1)}mm difference
+                                </span>
+                            </div>
+                        </div>
+                    )}
                 </div>
             </div>
             <div className="mt-4 p-2 bg-gray-200 rounded-md text-center text-gray-700 text-sm truncate">Status: {status}</div>
@@ -549,7 +651,7 @@ const CalibrateEDMScreen = ({ onNavigate, appState }) => {
                 </div>
                 {isCalibrated ? 
                     <Button onClick={() => onNavigate('STAND_ALONE_MODE')} icon={ChevronRight} size="lg">Next</Button>
-                    : <div style={{width: '112px'}}></div> // Placeholder to balance the layout
+                    : <div style={{width: '112px'}}></div>
                 }
             </BottomNavBar>
         </div>
@@ -626,9 +728,6 @@ const StandAloneModeScreen = ({ onNavigate, appState }) => {
 
 export default function App() {
     const [currentScreen, setCurrentScreen] = useState(() => {
-        // Optionally restore last screen (comment out if you don't want this)
-        // const settings = loadStoredAppSettings();
-        // return settings.lastScreen || 'SELECT_EVENT_TYPE';
         return 'SELECT_EVENT_TYPE';
     });
     

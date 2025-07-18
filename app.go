@@ -95,6 +95,39 @@ type ParsedEDMReading struct {
 	HARDecimal      float64
 }
 
+// Throw coordinate data structure
+type ThrowCoordinate struct {
+	X                float64   `json:"x"`                // X coordinate (metres from centre)
+	Y                float64   `json:"y"`                // Y coordinate (metres from centre)
+	Distance         float64   `json:"distance"`         // Calculated throw distance
+	CircleType       string    `json:"circleType"`       // SHOT, DISCUS, HAMMER, JAVELIN_ARC
+	Timestamp        time.Time `json:"timestamp"`        // When the throw was measured
+	AthleteID        string    `json:"athleteId"`        // Optional athlete identifier
+	CompetitionRound string    `json:"competitionRound"` // Optional round/session identifier
+	EDMReading       string    `json:"edmReading"`       // Raw EDM reading for reference
+}
+
+// Session data for grouping throws
+type ThrowSession struct {
+	SessionID   string             `json:"sessionId"`
+	CircleType  string             `json:"circleType"`
+	StartTime   time.Time          `json:"startTime"`
+	EndTime     *time.Time         `json:"endTime,omitempty"`
+	Coordinates []ThrowCoordinate  `json:"coordinates"`
+	Statistics  *SessionStatistics `json:"statistics,omitempty"`
+}
+
+// Statistics for a session
+type SessionStatistics struct {
+	TotalThrows     int     `json:"totalThrows"`
+	AverageX        float64 `json:"averageX"`
+	AverageY        float64 `json:"averageY"`
+	MaxDistance     float64 `json:"maxDistance"`
+	MinDistance     float64 `json:"minDistance"`
+	AverageDistance float64 `json:"averageDistance"`
+	SpreadRadius    float64 `json:"spreadRadius"` // Standard deviation of landing positions
+}
+
 // Demo simulation state to maintain consistency
 type DemoSimulation struct {
 	stationX      float64
@@ -111,6 +144,9 @@ type App struct {
 	demoMode         bool
 	CalibrationStore map[string]*EDMCalibrationData
 	demoSim          map[string]*DemoSimulation // Per-device demo simulation
+	// Throw coordinate tracking
+	throwCoordinates []ThrowCoordinate `json:"throwCoordinates"` // All recorded throws
+	currentSession   *ThrowSession     `json:"currentSession"`   // Current active session
 }
 
 // --- App Lifecycle & Helpers ---
@@ -120,6 +156,7 @@ func NewApp() *App {
 		windBuffer:       make([]WindReading, 0, windBufferSize),
 		CalibrationStore: make(map[string]*EDMCalibrationData),
 		demoSim:          make(map[string]*DemoSimulation),
+		throwCoordinates: make([]ThrowCoordinate, 0),
 		demoMode:         false,
 	}
 }
@@ -271,8 +308,10 @@ func (a *App) generateDemoEdgeReading(devType string, targetRadius float64) *Ave
 		sim = a.demoSim[devType]
 	}
 
-	// Generate a point on the circle edge with small tolerance variation
-	toleranceVariation := (rand.Float64() - 0.5) * 0.008 // ±4mm variation
+	// FIXED: Generate a point on the circle edge with SMALLER tolerance variation
+	// Ensure we stay within ±5mm (±0.005m) for throws, ±10mm for javelin
+	maxVariationMm := 4.0                                                    // Stay well within 5mm tolerance
+	toleranceVariation := (rand.Float64() - 0.5) * (maxVariationMm / 1000.0) // Convert to meters
 	effectiveRadius := targetRadius + toleranceVariation
 
 	// Random angle around the circle
@@ -292,16 +331,16 @@ func (a *App) generateDemoEdgeReading(devType string, targetRadius float64) *Ave
 	}
 
 	// Vertical angle (similar to centre reading with slight variation)
-	vazDegrees := sim.centreReading.VAzDecimal + (rand.Float64()-0.5)*2.0 // ±1 degree variation
+	vazDegrees := sim.centreReading.VAzDecimal + (rand.Float64()-0.5)*1.0 // Reduced variation
 
 	// Calculate slope distance
 	vazRad := vazDegrees * math.Pi / 180.0
 	slopeDistance := distanceToEdge / math.Sin(vazRad)
 
-	// Add measurement noise
-	slopeDistance += (rand.Float64() - 0.5) * 0.01
-	harDegrees += (rand.Float64() - 0.5) * 0.1
-	vazDegrees += (rand.Float64() - 0.5) * 0.1
+	// REDUCED measurement noise for better consistency
+	slopeDistance += (rand.Float64() - 0.5) * 0.005 // ±2.5mm noise instead of ±10mm
+	harDegrees += (rand.Float64() - 0.5) * 0.05     // ±0.025 degree noise
+	vazDegrees += (rand.Float64() - 0.5) * 0.05     // ±0.025 degree noise
 
 	reading := &AveragedEDMReading{
 		SlopeDistanceMm: slopeDistance * 1000.0,
@@ -309,9 +348,11 @@ func (a *App) generateDemoEdgeReading(devType string, targetRadius float64) *Ave
 		HARDecimal:      harDegrees,
 	}
 
+	expectedDifferenceMm := toleranceVariation * 1000.0
 	log.Printf("DEMO: Generated edge reading - SD: %.0fmm, VAz: %.4f°, HAR: %.4f°",
 		reading.SlopeDistanceMm, reading.VAzDecimal, reading.HARDecimal)
-	log.Printf("DEMO: Edge point at X=%.4fm, Y=%.4fm (radius: %.4fm)", edgeX, edgeY, effectiveRadius)
+	log.Printf("DEMO: Edge point at X=%.4fm, Y=%.4fm (radius: %.4fm, expected diff: %.1fmm)",
+		edgeX, edgeY, effectiveRadius, expectedDifferenceMm)
 
 	return reading
 }
@@ -728,34 +769,17 @@ func (a *App) MeasureThrow(devType string) (string, error) {
 	circleType := cal.SelectedCircleType
 	a.stateMux.Unlock()
 
+	var reading *AveragedEDMReading
+	var err error
+
 	if isDemoMode {
 		time.Sleep(THROW_DELAY)
-		reading := a.generateDemoThrowReading(devType, targetRadius, circleType)
-
-		// Calculate the actual throw distance from the generated reading
-		sdMeters := reading.SlopeDistanceMm / 1000.0
-		vazRad := reading.VAzDecimal * math.Pi / 180.0
-		harRad := reading.HARDecimal * math.Pi / 180.0
-
-		horizontalDistance := sdMeters * math.Sin(vazRad)
-		throwX := horizontalDistance * math.Cos(harRad)
-		throwY := horizontalDistance * math.Sin(harRad)
-
-		absoluteThrowX := cal.StationCoordinates.X + throwX
-		absoluteThrowY := cal.StationCoordinates.Y + throwY
-
-		distanceFromCentre := math.Sqrt(math.Pow(absoluteThrowX, 2) + math.Pow(absoluteThrowY, 2))
-		finalThrowDistance := distanceFromCentre - targetRadius
-
-		result := fmt.Sprintf("%.2f m", finalThrowDistance)
-		log.Printf("DEMO: Calculated throw distance: %s from generated reading", result)
-		go a.SendToScoreboard(strings.TrimSuffix(result, " m"))
-		return result, nil
-	}
-
-	reading, err := a.GetReliableEDMReading(devType)
-	if err != nil {
-		return "", fmt.Errorf("could not get throw reading: %w", err)
+		reading = a.generateDemoThrowReading(devType, targetRadius, circleType)
+	} else {
+		reading, err = a.GetReliableEDMReading(devType)
+		if err != nil {
+			return "", fmt.Errorf("could not get throw reading: %w", err)
+		}
 	}
 
 	log.Printf("EDM Throw reading for %s circle - SD: %.0fmm, VAz: %.4f°, HAR: %.4f°",
@@ -790,9 +814,337 @@ func (a *App) MeasureThrow(devType string) (string, error) {
 	log.Printf("  Circle radius: %.4fm", targetRadius)
 	log.Printf("  Final throw distance: %.4fm", finalThrowDistance)
 
+	// STORE THE COORDINATES
+	a.storeThrowCoordinate(ThrowCoordinate{
+		X:          absoluteThrowX,
+		Y:          absoluteThrowY,
+		Distance:   finalThrowDistance,
+		CircleType: circleType,
+		Timestamp:  time.Now().UTC(),
+		EDMReading: fmt.Sprintf("%.0f %.6f %.6f", reading.SlopeDistanceMm, reading.VAzDecimal, reading.HARDecimal),
+	})
+
 	result := fmt.Sprintf("%.2f m", finalThrowDistance)
 	go a.SendToScoreboard(strings.TrimSuffix(result, " m"))
 	return result, nil
+}
+
+// --- Throw Coordinate Storage and Management Functions ---
+
+// Store throw coordinate
+func (a *App) storeThrowCoordinate(coord ThrowCoordinate) {
+	a.stateMux.Lock()
+	defer a.stateMux.Unlock()
+
+	// Add to overall coordinates list
+	a.throwCoordinates = append(a.throwCoordinates, coord)
+
+	// Add to current session if active
+	if a.currentSession != nil && a.currentSession.CircleType == coord.CircleType {
+		a.currentSession.Coordinates = append(a.currentSession.Coordinates, coord)
+		a.updateSessionStatistics()
+	}
+
+	log.Printf("Stored throw coordinate: (%.4f, %.4f) for %s, distance: %.2fm",
+		coord.X, coord.Y, coord.CircleType, coord.Distance)
+}
+
+// Session management functions
+func (a *App) StartThrowSession(circleType string, sessionID string) error {
+	a.stateMux.Lock()
+	defer a.stateMux.Unlock()
+
+	// End current session if exists
+	if a.currentSession != nil {
+		now := time.Now().UTC()
+		a.currentSession.EndTime = &now
+		a.updateSessionStatistics()
+	}
+
+	// Start new session
+	a.currentSession = &ThrowSession{
+		SessionID:   sessionID,
+		CircleType:  circleType,
+		StartTime:   time.Now().UTC(),
+		Coordinates: make([]ThrowCoordinate, 0),
+	}
+
+	log.Printf("Started new throw session: %s for %s", sessionID, circleType)
+	return nil
+}
+
+func (a *App) EndThrowSession() (*ThrowSession, error) {
+	a.stateMux.Lock()
+	defer a.stateMux.Unlock()
+
+	if a.currentSession == nil {
+		return nil, fmt.Errorf("no active session")
+	}
+
+	now := time.Now().UTC()
+	a.currentSession.EndTime = &now
+	a.updateSessionStatistics()
+
+	session := a.currentSession
+	a.currentSession = nil
+
+	log.Printf("Ended throw session: %s with %d throws", session.SessionID, len(session.Coordinates))
+	return session, nil
+}
+
+// Update session statistics
+func (a *App) updateSessionStatistics() {
+	if a.currentSession == nil || len(a.currentSession.Coordinates) == 0 {
+		return
+	}
+
+	coords := a.currentSession.Coordinates
+	stats := &SessionStatistics{
+		TotalThrows: len(coords),
+	}
+
+	var sumX, sumY, sumDistance float64
+	var maxDist, minDist float64 = coords[0].Distance, coords[0].Distance
+
+	for _, coord := range coords {
+		sumX += coord.X
+		sumY += coord.Y
+		sumDistance += coord.Distance
+
+		if coord.Distance > maxDist {
+			maxDist = coord.Distance
+		}
+		if coord.Distance < minDist {
+			minDist = coord.Distance
+		}
+	}
+
+	stats.AverageX = sumX / float64(len(coords))
+	stats.AverageY = sumY / float64(len(coords))
+	stats.AverageDistance = sumDistance / float64(len(coords))
+	stats.MaxDistance = maxDist
+	stats.MinDistance = minDist
+
+	// Calculate spread radius (standard deviation of positions from average)
+	var sumSquaredDist float64
+	for _, coord := range coords {
+		dx := coord.X - stats.AverageX
+		dy := coord.Y - stats.AverageY
+		sumSquaredDist += dx*dx + dy*dy
+	}
+	stats.SpreadRadius = math.Sqrt(sumSquaredDist / float64(len(coords)))
+
+	a.currentSession.Statistics = stats
+}
+
+// Export functions
+func (a *App) ExportThrowCoordinates() ([]ThrowCoordinate, error) {
+	a.stateMux.Lock()
+	defer a.stateMux.Unlock()
+
+	// Return copy of all coordinates
+	coordinates := make([]ThrowCoordinate, len(a.throwCoordinates))
+	copy(coordinates, a.throwCoordinates)
+
+	log.Printf("Exported %d throw coordinates", len(coordinates))
+	return coordinates, nil
+}
+
+func (a *App) ExportThrowCoordinatesForCircle(circleType string) ([]ThrowCoordinate, error) {
+	a.stateMux.Lock()
+	defer a.stateMux.Unlock()
+
+	var filtered []ThrowCoordinate
+	for _, coord := range a.throwCoordinates {
+		if coord.CircleType == circleType {
+			filtered = append(filtered, coord)
+		}
+	}
+
+	log.Printf("Exported %d throw coordinates for %s", len(filtered), circleType)
+	return filtered, nil
+}
+
+func (a *App) ExportThrowCoordinatesAsCSV() (string, error) {
+	a.stateMux.Lock()
+	coordinates := make([]ThrowCoordinate, len(a.throwCoordinates))
+	copy(coordinates, a.throwCoordinates)
+	a.stateMux.Unlock()
+
+	var csvData strings.Builder
+	csvData.WriteString("X,Y,Distance,CircleType,Timestamp,AthleteID,CompetitionRound,EDMReading\n")
+
+	for _, coord := range coordinates {
+		csvData.WriteString(fmt.Sprintf("%.6f,%.6f,%.3f,%s,%s,%s,%s,\"%s\"\n",
+			coord.X, coord.Y, coord.Distance, coord.CircleType,
+			coord.Timestamp.Format("2006-01-02T15:04:05.000Z"),
+			coord.AthleteID, coord.CompetitionRound, coord.EDMReading))
+	}
+
+	log.Printf("Exported %d coordinates as CSV", len(coordinates))
+	return csvData.String(), nil
+}
+
+func (a *App) ExportHeatmapData(circleType string, gridSize float64) (map[string]interface{}, error) {
+	a.stateMux.Lock()
+	defer a.stateMux.Unlock()
+
+	var coordinates []ThrowCoordinate
+	for _, coord := range a.throwCoordinates {
+		if coord.CircleType == circleType {
+			coordinates = append(coordinates, coord)
+		}
+	}
+
+	if len(coordinates) == 0 {
+		return nil, fmt.Errorf("no coordinates found for %s", circleType)
+	}
+
+	// Find bounds
+	minX, maxX := coordinates[0].X, coordinates[0].X
+	minY, maxY := coordinates[0].Y, coordinates[0].Y
+
+	for _, coord := range coordinates {
+		if coord.X < minX {
+			minX = coord.X
+		}
+		if coord.X > maxX {
+			maxX = coord.X
+		}
+		if coord.Y < minY {
+			minY = coord.Y
+		}
+		if coord.Y > maxY {
+			maxY = coord.Y
+		}
+	}
+
+	// Create grid
+	gridWidth := int(math.Ceil((maxX-minX)/gridSize)) + 1
+	gridHeight := int(math.Ceil((maxY-minY)/gridSize)) + 1
+
+	heatmapGrid := make([][]int, gridHeight)
+	for i := range heatmapGrid {
+		heatmapGrid[i] = make([]int, gridWidth)
+	}
+
+	// Populate grid
+	for _, coord := range coordinates {
+		gridX := int((coord.X - minX) / gridSize)
+		gridY := int((coord.Y - minY) / gridSize)
+
+		if gridX >= 0 && gridX < gridWidth && gridY >= 0 && gridY < gridHeight {
+			heatmapGrid[gridY][gridX]++
+		}
+	}
+
+	result := map[string]interface{}{
+		"circleType": circleType,
+		"gridSize":   gridSize,
+		"bounds": map[string]float64{
+			"minX": minX,
+			"maxX": maxX,
+			"minY": minY,
+			"maxY": maxY,
+		},
+		"gridWidth":   gridWidth,
+		"gridHeight":  gridHeight,
+		"heatmap":     heatmapGrid,
+		"totalThrows": len(coordinates),
+		"coordinates": coordinates, // Include raw coordinates for overlay
+	}
+
+	log.Printf("Generated heatmap for %s: %dx%d grid with %d throws",
+		circleType, gridWidth, gridHeight, len(coordinates))
+
+	return result, nil
+}
+
+// Clear stored coordinates (useful for testing or new competitions)
+func (a *App) ClearThrowCoordinates() error {
+	a.stateMux.Lock()
+	defer a.stateMux.Unlock()
+
+	count := len(a.throwCoordinates)
+	a.throwCoordinates = make([]ThrowCoordinate, 0)
+
+	// End current session
+	if a.currentSession != nil {
+		now := time.Now().UTC()
+		a.currentSession.EndTime = &now
+		a.currentSession = nil
+	}
+
+	log.Printf("Cleared %d stored throw coordinates", count)
+	return nil
+}
+
+// Get current session info
+func (a *App) GetCurrentSession() (*ThrowSession, error) {
+	a.stateMux.Lock()
+	defer a.stateMux.Unlock()
+
+	if a.currentSession == nil {
+		return nil, fmt.Errorf("no active session")
+	}
+
+	// Return copy
+	session := *a.currentSession
+	return &session, nil
+}
+
+// Get statistics for all throws of a circle type
+func (a *App) GetThrowStatistics(circleType string) (*SessionStatistics, error) {
+	a.stateMux.Lock()
+	defer a.stateMux.Unlock()
+
+	var coordinates []ThrowCoordinate
+	for _, coord := range a.throwCoordinates {
+		if coord.CircleType == circleType {
+			coordinates = append(coordinates, coord)
+		}
+	}
+
+	if len(coordinates) == 0 {
+		return nil, fmt.Errorf("no throws found for %s", circleType)
+	}
+
+	stats := &SessionStatistics{
+		TotalThrows: len(coordinates),
+	}
+
+	var sumX, sumY, sumDistance float64
+	var maxDist, minDist float64 = coordinates[0].Distance, coordinates[0].Distance
+
+	for _, coord := range coordinates {
+		sumX += coord.X
+		sumY += coord.Y
+		sumDistance += coord.Distance
+
+		if coord.Distance > maxDist {
+			maxDist = coord.Distance
+		}
+		if coord.Distance < minDist {
+			minDist = coord.Distance
+		}
+	}
+
+	stats.AverageX = sumX / float64(len(coordinates))
+	stats.AverageY = sumY / float64(len(coordinates))
+	stats.AverageDistance = sumDistance / float64(len(coordinates))
+	stats.MaxDistance = maxDist
+	stats.MinDistance = minDist
+
+	// Calculate spread radius
+	var sumSquaredDist float64
+	for _, coord := range coordinates {
+		dx := coord.X - stats.AverageX
+		dy := coord.Y - stats.AverageY
+		sumSquaredDist += dx*dx + dy*dy
+	}
+	stats.SpreadRadius = math.Sqrt(sumSquaredDist / float64(len(coordinates)))
+
+	return stats, nil
 }
 
 // --- Wind & Scoreboard Specific Functions ---
