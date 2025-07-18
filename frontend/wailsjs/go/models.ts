@@ -92,6 +92,118 @@ export namespace main {
 		}
 	}
 	
+	
+	export class SessionStatistics {
+	    totalThrows: number;
+	    averageX: number;
+	    averageY: number;
+	    maxDistance: number;
+	    minDistance: number;
+	    averageDistance: number;
+	    spreadRadius: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new SessionStatistics(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.totalThrows = source["totalThrows"];
+	        this.averageX = source["averageX"];
+	        this.averageY = source["averageY"];
+	        this.maxDistance = source["maxDistance"];
+	        this.minDistance = source["minDistance"];
+	        this.averageDistance = source["averageDistance"];
+	        this.spreadRadius = source["spreadRadius"];
+	    }
+	}
+	export class ThrowCoordinate {
+	    x: number;
+	    y: number;
+	    distance: number;
+	    circleType: string;
+	    // Go type: time
+	    timestamp: any;
+	    athleteId: string;
+	    competitionRound: string;
+	    edmReading: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ThrowCoordinate(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.x = source["x"];
+	        this.y = source["y"];
+	        this.distance = source["distance"];
+	        this.circleType = source["circleType"];
+	        this.timestamp = this.convertValues(source["timestamp"], null);
+	        this.athleteId = source["athleteId"];
+	        this.competitionRound = source["competitionRound"];
+	        this.edmReading = source["edmReading"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class ThrowSession {
+	    sessionId: string;
+	    circleType: string;
+	    // Go type: time
+	    startTime: any;
+	    // Go type: time
+	    endTime?: any;
+	    coordinates: ThrowCoordinate[];
+	    statistics?: SessionStatistics;
+	
+	    static createFrom(source: any = {}) {
+	        return new ThrowSession(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.sessionId = source["sessionId"];
+	        this.circleType = source["circleType"];
+	        this.startTime = this.convertValues(source["startTime"], null);
+	        this.endTime = this.convertValues(source["endTime"], null);
+	        this.coordinates = this.convertValues(source["coordinates"], ThrowCoordinate);
+	        this.statistics = this.convertValues(source["statistics"], SessionStatistics);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 
 }
 

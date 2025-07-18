@@ -1,12 +1,12 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
-    ChevronLeft, ChevronRight, Wind, Speaker, Target, Power, PowerOff, Compass, CheckCircle, XCircle, Ruler, Wifi, Usb, RotateCcw
+    ChevronLeft, ChevronRight, Wind, Speaker, Target, Power, PowerOff, Compass, CheckCircle, XCircle, Ruler, Wifi, Usb, RotateCcw, TrendingUp
 } from 'lucide-react';
 
 // Wails Go Function Imports
 import {
     ListSerialPorts, ConnectSerialDevice, ConnectNetworkDevice, DisconnectDevice, SetDemoMode,
-    GetCalibration, SaveCalibration, SetCircleCentre, VerifyCircleEdge, MeasureThrow, ResetCalibration, SendToScoreboard, MeasureWind
+    GetCalibration, SaveCalibration, SetCircleCentre, VerifyCircleEdge, MeasureThrow, ResetCalibration, SendToScoreboard, MeasureWind, ExportHeatmapData
 } from '../wailsjs/go/main/App';
 
 // ==================================================
@@ -127,6 +127,7 @@ const Button = ({ children, onClick, variant = 'primary', className = '', icon: 
         case 'secondary': variantStyle = 'bg-gray-200 hover:bg-gray-300 text-gray-800 focus:ring-gray-400'; break;
         case 'danger': variantStyle = 'bg-red-600 hover:bg-red-700 text-white focus:ring-red-500'; break;
         case 'success': variantStyle = 'bg-green-500 hover:bg-green-600 text-white focus:ring-green-400'; break;
+        case 'heatmap': variantStyle = 'bg-red-500 hover:bg-red-600 text-white focus:ring-red-400'; break;
         default: variantStyle = 'bg-blue-600 hover:bg-blue-700 text-white focus:ring-blue-500';
     }
     return ( 
@@ -186,6 +187,401 @@ const BottomNavBar = ({ children }) => (
         {children}
     </div> 
 );
+
+// ==================================================
+// HEAT MAP COMPONENT
+// ==================================================
+
+const HeatMapScreen = ({ onNavigate, appState }) => {
+    const canvasRef = useRef(null);
+    const [heatmapData, setHeatmapData] = useState(null);
+    const [isLoading, setIsLoading] = useState(true);
+    const [error, setError] = useState(null);
+    const [gridSize, setGridSize] = useState(0.5); // Default 0.5m grid
+    const [currentCircleType, setCurrentCircleType] = useState('SHOT');
+
+    // Get current circle type from calibration on component mount
+    useEffect(() => {
+        const fetchCurrentCircleType = async () => {
+            try {
+                const calData = await GetCalibration('edm');
+                if (calData && calData.selectedCircleType) {
+                    setCurrentCircleType(calData.selectedCircleType);
+                    console.log('Heat map using circle type:', calData.selectedCircleType);
+                }
+            } catch (error) {
+                console.error('Error fetching calibration:', error);
+                // Fallback to SHOT if calibration fails
+                setCurrentCircleType('SHOT');
+            }
+        };
+        fetchCurrentCircleType();
+    }, []);
+
+    const fetchHeatmapData = async () => {
+        setIsLoading(true);
+        setError(null);
+        try {
+            const data = await ExportHeatmapData(currentCircleType, gridSize);
+            setHeatmapData(data);
+        } catch (error) {
+            console.error('Error fetching heatmap data:', error);
+            // Handle the "no coordinates found" error gracefully
+            if (error.toString().includes('no coordinates found')) {
+                setHeatmapData({
+                    circleType: currentCircleType,
+                    gridSize: gridSize,
+                    bounds: { minX: -10, maxX: 10, minY: -10, maxY: 10 }, // Default bounds to ensure circle is visible
+                    gridWidth: 0,
+                    gridHeight: 0,
+                    heatmap: [],
+                    totalThrows: 0,
+                    coordinates: []
+                });
+                setError(null); // Clear error since this is expected behavior
+            } else {
+                setError(`Error loading heatmap data: ${error}`);
+            }
+        }
+        setIsLoading(false);
+    };
+
+    useEffect(() => {
+        if (currentCircleType) {
+            fetchHeatmapData();
+        }
+    }, [currentCircleType, gridSize]);
+
+    // Draw heatmap on canvas
+    useEffect(() => {
+        if (!heatmapData || !canvasRef.current) return;
+
+        const canvas = canvasRef.current;
+        const ctx = canvas.getContext('2d');
+        const { width, height } = canvas;
+        
+        // Clear canvas
+        ctx.clearRect(0, 0, width, height);
+        
+        // Get target radius for the current circle type
+        const UKA_RADII = { SHOT: 1.0675, DISCUS: 1.250, HAMMER: 1.0675, JAVELIN_ARC: 8.000 };
+        const targetRadius = UKA_RADII[currentCircleType] || 1.0675;
+        
+        if (heatmapData.totalThrows === 0) {
+            // Even with no data, draw the circle center and actual circle for reference
+            const margin = 60;
+            const centerX = width / 2;
+            const centerY = height / 2;
+            
+            // Use a reasonable scale for empty display (e.g., 15 pixels per meter for better fit)
+            const scale = 15;
+            const circleRadiusPixels = targetRadius * scale;
+            
+            // Draw distance arcs for reference
+            ctx.strokeStyle = 'rgba(128, 128, 128, 0.4)';
+            ctx.lineWidth = 1;
+            ctx.setLineDash([5, 5]);
+            
+            let distanceArcs = [];
+            if (currentCircleType === 'SHOT') {
+                distanceArcs = [6, 8, 10, 12, 14];
+            } else {
+                distanceArcs = [10, 20, 30, 40, 50, 60];
+            }
+            
+            distanceArcs.forEach(distance => {
+                const arcRadius = (distance + targetRadius) * scale;
+                if (arcRadius > 10 && arcRadius < Math.min(width - 100, height - 100)) {
+                    ctx.beginPath();
+                    ctx.arc(centerX, centerY, arcRadius, 0, 2 * Math.PI);
+                    ctx.stroke();
+                    
+                    ctx.fillStyle = 'rgba(100, 100, 100, 0.6)';
+                    ctx.font = '10px Arial';
+                    ctx.textAlign = 'center';
+                    ctx.fillText(`${distance}m`, centerX, centerY - arcRadius - 5);
+                }
+            });
+            
+            ctx.setLineDash([]);
+            
+            // Draw actual circle outline
+            ctx.strokeStyle = 'green';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.arc(centerX, centerY, circleRadiusPixels, 0, 2 * Math.PI);
+            ctx.stroke();
+            
+            // Draw circle center
+            ctx.fillStyle = 'white';
+            ctx.beginPath();
+            ctx.arc(centerX, centerY, 8, 0, 2 * Math.PI);
+            ctx.fill();
+            ctx.strokeStyle = 'green';
+            ctx.lineWidth = 3;
+            ctx.stroke();
+            
+            // Draw center cross
+            ctx.strokeStyle = 'green';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(centerX - 6, centerY);
+            ctx.lineTo(centerX + 6, centerY);
+            ctx.moveTo(centerX, centerY - 6);
+            ctx.lineTo(centerX, centerY + 6);
+            ctx.stroke();
+            
+            // Draw circle type and radius label
+            ctx.fillStyle = 'black';
+            ctx.font = '16px Arial';
+            ctx.textAlign = 'center';
+            ctx.fillText(`${currentCircleType} Circle`, centerX, centerY - circleRadiusPixels - 40);
+            ctx.font = '14px Arial';
+            ctx.fillText(`Radius: ${targetRadius.toFixed(3)}m`, centerX, centerY - circleRadiusPixels - 25);
+            
+            // Draw "No Data" message
+            ctx.fillStyle = '#666';
+            ctx.font = '20px Arial';
+            ctx.textAlign = 'center';
+            ctx.fillText('No throw data available', centerX, centerY + Math.max(circleRadiusPixels + 40, 80));
+            
+            return;
+        }
+
+        const { heatmap, bounds, gridWidth, gridHeight, coordinates } = heatmapData;
+        
+        // Calculate bounds that include ALL data points AND the circle center (0,0)
+        let minX = Math.min(bounds.minX, 0);
+        let maxX = Math.max(bounds.maxX, 0);
+        let minY = Math.min(bounds.minY, 0);
+        let maxY = Math.max(bounds.maxY, 0);
+        
+        // Ensure the circle outline is always visible by expanding bounds to include circle edge
+        minX = Math.min(minX, -targetRadius);
+        maxX = Math.max(maxX, targetRadius);
+        minY = Math.min(minY, -targetRadius);
+        maxY = Math.max(maxY, targetRadius);
+        
+        // Add padding around the data to ensure nothing is cut off
+        const padding = Math.max((maxX - minX) * 0.1, (maxY - minY) * 0.1, 2.0); // At least 2m padding
+        minX -= padding;
+        maxX += padding;
+        minY -= padding;
+        maxY += padding;
+        
+        // Calculate scale and offset to center the heatmap
+        const margin = 60; // Increased margin for labels
+        const availableWidth = width - 2 * margin;
+        const availableHeight = height - 2 * margin;
+        
+        const dataWidth = maxX - minX;
+        const dataHeight = maxY - minY;
+        
+        const scaleX = availableWidth / dataWidth;
+        const scaleY = availableHeight / dataHeight;
+        const scale = Math.min(scaleX, scaleY);
+        
+        const offsetX = margin + (availableWidth - dataWidth * scale) / 2;
+        const offsetY = margin + (availableHeight - dataHeight * scale) / 2;
+
+        // Find max value for color scaling
+        const maxValue = Math.max(...heatmap.flat(), 1); // Ensure at least 1 to avoid division by zero
+        
+        // Draw heatmap grid
+        for (let y = 0; y < gridHeight; y++) {
+            for (let x = 0; x < gridWidth; x++) {
+                const value = heatmap[y][x];
+                if (value > 0) {
+                    const intensity = value / maxValue;
+                    
+                    // Color from blue (low) to red (high)
+                    const red = Math.floor(255 * intensity);
+                    const blue = Math.floor(255 * (1 - intensity));
+                    const green = Math.floor(100 * (1 - intensity));
+                    
+                    ctx.fillStyle = `rgba(${red}, ${green}, ${blue}, ${0.3 + 0.7 * intensity})`;
+                    
+                    const cellX = offsetX + (bounds.minX + x * gridSize - minX) * scale;
+                    const cellY = offsetY + (maxY - (bounds.minY + y * gridSize) - minY) * scale;
+                    const cellWidth = gridSize * scale;
+                    const cellHeight = gridSize * scale;
+                    
+                    ctx.fillRect(cellX, cellY, cellWidth, cellHeight);
+                    
+                    // Draw value text if cell is large enough
+                    if (cellWidth > 25 && cellHeight > 25) {
+                        ctx.fillStyle = 'white';
+                        ctx.font = 'bold 12px Arial';
+                        ctx.textAlign = 'center';
+                        ctx.fillText(value.toString(), cellX + cellWidth/2, cellY + cellHeight/2 + 4);
+                    }
+                }
+            }
+        }
+        
+        // Calculate circle center position in canvas coordinates
+        const centerX = offsetX + (0 - minX) * scale;
+        const centerY = offsetY + (maxY - 0 - minY) * scale;
+        
+        // Draw distance arcs based on event type
+        ctx.strokeStyle = 'rgba(128, 128, 128, 0.6)'; // Light gray
+        ctx.lineWidth = 1;
+        ctx.setLineDash([5, 5]); // Dashed line
+        
+        let distanceArcs = [];
+        if (currentCircleType === 'SHOT') {
+            distanceArcs = [6, 8, 10, 12, 14]; // Shot put distances
+        } else {
+            // Discus, Hammer, Javelin - every 10m
+            distanceArcs = [20, 30, 40, 50, 60];
+        }
+        
+        // Draw distance arcs
+        distanceArcs.forEach(distance => {
+            const arcRadius = (distance + targetRadius) * scale; // Distance from center plus circle radius
+            
+            // Only draw if arc is within visible area
+            if (arcRadius > 10 && arcRadius < Math.min(width, height)) {
+                ctx.beginPath();
+                ctx.arc(centerX, centerY, arcRadius, 0, 2 * Math.PI);
+                ctx.stroke();
+                
+                // Add distance label at top of arc
+                if (arcRadius < Math.min(width - 60, height - 60)) {
+                    ctx.fillStyle = 'rgba(100, 100, 100, 0.8)';
+                    ctx.font = '11px Arial';
+                    ctx.textAlign = 'center';
+                    ctx.fillText(`${distance}m`, centerX, centerY - arcRadius - 5);
+                }
+            }
+        });
+        
+        // Reset line dash for other elements
+        ctx.setLineDash([]);
+        
+        // Draw actual circle outline to scale
+        const circleRadiusPixels = targetRadius * scale;
+        ctx.strokeStyle = 'green';
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.arc(centerX, centerY, circleRadiusPixels, 0, 2 * Math.PI);
+        ctx.stroke();
+        
+        // Draw circle center - ALWAYS visible and prominent
+        ctx.fillStyle = 'white';
+        ctx.beginPath();
+        ctx.arc(centerX, centerY, 8, 0, 2 * Math.PI);
+        ctx.fill();
+        ctx.strokeStyle = 'green';
+        ctx.lineWidth = 3;
+        ctx.stroke();
+        
+        // Draw center cross
+        ctx.strokeStyle = 'green';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(centerX - 6, centerY);
+        ctx.lineTo(centerX + 6, centerY);
+        ctx.moveTo(centerX, centerY - 6);
+        ctx.lineTo(centerX, centerY + 6);
+        ctx.stroke();
+        
+        // Draw legend (simplified)
+        ctx.fillStyle = 'black';
+        ctx.font = '12px Arial';
+        ctx.textAlign = 'left';
+        ctx.fillText(`${currentCircleType} Circle (${targetRadius.toFixed(3)}m radius)`, 10, height - 30);
+        ctx.fillText(`Grid: ${gridSize}m | Distance Arcs: ${currentCircleType === 'SHOT' ? '6-14m' : '10-100m'}`, 10, height - 15);
+
+    }, [heatmapData, currentCircleType]);
+
+    const circleTypes = ['SHOT', 'DISCUS', 'HAMMER', 'JAVELIN_ARC'];
+    const gridSizes = [0.5, 1.0, 2.0, 5.0];
+
+    if (isLoading) {
+        return (
+            <div className="p-4 flex items-center justify-center h-full">
+                <div className="text-center">
+                    <div className="text-lg mb-2">Loading heatmap...</div>
+                    <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto"></div>
+                </div>
+            </div>
+        );
+    }
+
+    return (
+        <div className="p-4 md:p-6 max-w-full mx-auto" style={{ paddingBottom: '80px', maxHeight: 'calc(100vh - 60px)', overflowY: 'auto' }}>
+            <h1 className="text-2xl font-bold text-center mb-4 text-gray-800">Landing Heat Map</h1>
+            
+            {error && (
+                <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded mb-4">
+                    {error}
+                </div>
+            )}
+            
+            <div className="grid grid-cols-1 gap-4 mb-4">
+                <div className="bg-blue-50 p-3 rounded-lg border border-blue-200">
+                    <div className="text-sm font-medium text-blue-800 mb-1">Current Event</div>
+                    <div className="text-lg font-bold text-blue-900">{currentCircleType} Circle</div>
+                </div>
+                <Select
+                    label="Grid Size"
+                    value={gridSize}
+                    onChange={(value) => setGridSize(parseFloat(value))}
+                    options={gridSizes.map(size => ({ value: size, label: `${size}m` }))}
+                />
+            </div>
+            
+            <div className="bg-white p-4 rounded-lg shadow-md border relative">
+                <canvas
+                    ref={canvasRef}
+                    width={800}
+                    height={450}
+                    className="w-full h-auto border border-gray-300 rounded"
+                    style={{ maxHeight: '45vh' }}
+                />
+                
+                {/* Show helpful message when no data */}
+                {heatmapData && heatmapData.totalThrows === 0 && (
+                    <div className="absolute inset-0 flex items-center justify-center bg-gray-50 bg-opacity-90 rounded">
+                        <div className="text-center p-6">
+                            <TrendingUp size={48} className="mx-auto mb-3 text-gray-400" />
+                            <h3 className="text-lg font-semibold text-gray-600 mb-2">No Throw Data</h3>
+                            <p className="text-gray-500">
+                                Start measuring throws to see the heat map.<br />
+                                Data will appear here as you record measurements.
+                            </p>
+                        </div>
+                    </div>
+                )}
+            </div>
+            
+            {heatmapData && heatmapData.totalThrows > 0 && (
+                <div className="mt-4 grid grid-cols-1 sm:grid-cols-3 gap-4 text-center">
+                    <div className="bg-blue-100 p-3 rounded">
+                        <div className="text-sm text-gray-600">Total Throws</div>
+                        <div className="text-xl font-bold text-blue-700">{heatmapData.totalThrows}</div>
+                    </div>
+                    <div className="bg-green-100 p-3 rounded">
+                        <div className="text-sm text-gray-600">Grid Size</div>
+                        <div className="text-xl font-bold text-green-700">{gridSize}m</div>
+                    </div>
+                    <div className="bg-purple-100 p-3 rounded">
+                        <div className="text-sm text-gray-600">Circle Radius</div>
+                        <div className="text-xl font-bold text-purple-700">{(heatmapData.circleType === 'SHOT' ? 1.0675 : 
+                            heatmapData.circleType === 'DISCUS' ? 1.250 : 
+                            heatmapData.circleType === 'HAMMER' ? 1.0675 : 8.000).toFixed(3)}m</div>
+                    </div>
+                </div>
+            )}
+
+            <BottomNavBar>
+                <Button onClick={() => onNavigate('STAND_ALONE_MODE')} variant="secondary" icon={ChevronLeft} size="lg">Back</Button>
+                <Button onClick={fetchHeatmapData} variant="primary" size="lg">Refresh</Button>
+            </BottomNavBar>
+        </div>
+    );
+};
 
 // ==================================================
 // SCREEN COMPONENTS
@@ -717,6 +1113,10 @@ const StandAloneModeScreen = ({ onNavigate, appState }) => {
             <div className="mt-6 p-2 bg-gray-200 rounded-md text-center text-gray-700 text-sm truncate">Status: {status}</div>
             <BottomNavBar>
                 <Button onClick={() => onNavigate('SELECT_DEVICES')} variant="secondary" icon={ChevronLeft} size="lg">Back</Button>
+                {/* Show Heat Map button only for Throws */}
+                {isThrows && (
+                    <Button onClick={() => onNavigate('HEAT_MAP')} variant="heatmap" icon={TrendingUp} size="lg">Heat Map</Button>
+                )}
             </BottomNavBar>
         </div>
     );
@@ -777,6 +1177,8 @@ export default function App() {
                 return <CalibrateEDMScreen onNavigate={setCurrentScreen} appState={appState} setAppState={setAppState} />;
             case 'STAND_ALONE_MODE': 
                 return <StandAloneModeScreen onNavigate={setCurrentScreen} appState={appState} setAppState={setAppState} />;
+            case 'HEAT_MAP':
+                return <HeatMapScreen onNavigate={setCurrentScreen} appState={appState} setAppState={setAppState} />;
             default: 
                 return <SelectEventTypeScreen onNavigate={setCurrentScreen} setAppState={setAppState} />;
         }

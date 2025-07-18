@@ -3,6 +3,8 @@
 import {main} from '../models';
 import {context} from '../models';
 
+export function ClearThrowCoordinates():Promise<void>;
+
 export function ConnectNetworkDevice(arg1:string,arg2:string,arg3:number):Promise<string>;
 
 export function ConnectSerialDevice(arg1:string,arg2:string):Promise<string>;
@@ -11,9 +13,23 @@ export function DebugCalibrationData(arg1:string):Promise<void>;
 
 export function DisconnectDevice(arg1:string):Promise<string>;
 
+export function EndThrowSession():Promise<main.ThrowSession>;
+
+export function ExportHeatmapData(arg1:string,arg2:number):Promise<Record<string, any>>;
+
+export function ExportThrowCoordinates():Promise<Array<main.ThrowCoordinate>>;
+
+export function ExportThrowCoordinatesAsCSV():Promise<string>;
+
+export function ExportThrowCoordinatesForCircle(arg1:string):Promise<Array<main.ThrowCoordinate>>;
+
 export function GetCalibration(arg1:string):Promise<main.EDMCalibrationData>;
 
+export function GetCurrentSession():Promise<main.ThrowSession>;
+
 export function GetReliableEDMReading(arg1:string):Promise<main.AveragedEDMReading>;
+
+export function GetThrowStatistics(arg1:string):Promise<main.SessionStatistics>;
 
 export function ListSerialPorts():Promise<Array<string>>;
 
@@ -30,6 +46,8 @@ export function SendToScoreboard(arg1:string):Promise<void>;
 export function SetCircleCentre(arg1:string):Promise<main.EDMCalibrationData>;
 
 export function SetDemoMode(arg1:boolean):Promise<void>;
+
+export function StartThrowSession(arg1:string,arg2:string):Promise<void>;
 
 export function StartWindListener(arg1:string,arg2:context.Context):Promise<void>;
 
